@@ -9,6 +9,11 @@ dependencies = [
     "uvicorn[standard]>=0.52.3",
     "huggingface-hub>=1.27.0",
     "pydantic-settings>=2.15.0",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30.0",
+    "alembic>=1.14.0",
+    # Sync driver, used only by Alembic; see migrations/env.py.
+    "psycopg[binary]>=3.2",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +28,10 @@ line-length = 88
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI dependency defaults are evaluated per request, not once at import.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.File", "fastapi.Form"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file='.env', extra="ignore")
     hugging_face_api_token: str
@@ -7,6 +8,11 @@ class Settings(BaseSettings):
     embedding_library: str
     api_client_ttl: float
 
+    # PostgreSQL. `database_url` must carry the asyncpg driver
+    # (postgresql+asyncpg://...); Alembic swaps in psycopg to run .sql files.
+    database_url: str
+    db_echo: bool = False
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
+
 settings = Settings()
-
-
