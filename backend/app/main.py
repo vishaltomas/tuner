@@ -5,7 +5,8 @@ from fastapi import Depends, FastAPI
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db import engine, get_session
+from app.api.routes import router
+from app.db.session import engine, get_session
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+# Vite proxies /api/* here with the prefix stripped, so these sit at the
+# root and no CORS handling is needed in dev.
+app.include_router(router)
+
 
 @app.get("/")
 async def root():
@@ -47,8 +52,3 @@ async def health(session: AsyncSession = Depends(get_session)):
     except Exception:
         logger.warning("database health check failed", exc_info=True)
         return {"status": "degraded", "database": "down"}
-
-
-@app.post("/embed")
-async def embed():
-    return

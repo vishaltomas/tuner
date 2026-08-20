@@ -16,7 +16,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from db import Base
+from app.db.session import Base
 
 
 class DocumentKind(StrEnum):
@@ -39,6 +39,11 @@ class Source(Base):
     """
 
     __tablename__ = "sources"
+
+    # Timestamps come from server defaults, so INSERT must fetch them back via
+    # RETURNING; otherwise the first read of created_at would emit a lazy load
+    # from async code and raise MissingGreenlet.
+    __mapper_args__ = {"eager_defaults": True}
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
@@ -72,6 +77,11 @@ class SourceDocument(Base):
     """A single uploaded file and how far its embedding run got."""
 
     __tablename__ = "source_documents"
+
+    # Timestamps come from server defaults, so INSERT must fetch them back via
+    # RETURNING; otherwise the first read of added_at would emit a lazy load
+    # from async code and raise MissingGreenlet.
+    __mapper_args__ = {"eager_defaults": True}
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4

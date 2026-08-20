@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "tuner-backend"
 version = "0.1.0"
@@ -14,6 +18,8 @@ dependencies = [
     "alembic>=1.14.0",
     # Sync driver, used only by Alembic; see migrations/env.py.
     "psycopg[binary]>=3.2",
+    # Required by FastAPI to parse the multipart uploads /embed takes.
+    "python-multipart>=0.0.20",
 ]
 
 [project.optional-dependencies]
@@ -21,6 +27,11 @@ dev = [
     "pytest>=9.1.1",
     "ruff>=0.16.3",
 ]
+
+# Only the app ships; migrations/ and scripts/ are run in place, and without
+# this setuptools refuses to guess between them.
+[tool.setuptools.packages.find]
+include = ["app*"]
 
 [tool.ruff]
 target-version = "py312"

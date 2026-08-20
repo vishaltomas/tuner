@@ -4,7 +4,7 @@ import time
 
 from huggingface_hub import HfApi
 
-from config import settings
+from app.config import settings
 
 hf_cache = {}
 
@@ -17,22 +17,13 @@ def with_api(func):
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        hf_api = None
         now = time.monotonic()
-        if hf_cache.get('hf_api'):
-            older_api_created_at = hf_cache['hf_api']['time']
-            if now  - older_api_created_at > settings.api_client_ttl:
-                hf_api = HfApi(token=settings.hugging_face_api_token)
-                hf_cache["hf_api"]["api"] = hf_api
-                hf_cache["hf_api"]["time"] = now
-            else:
-                hf_api = hf_cache["hf_api"]["api"]
-        else:
-            hf_api = HfApi(token=settings.hugging_face_api_token)
-            hf_cache["hf_api"]["api"] = hf_api
-            hf_cache["hf_api"]["time"] = now
-        
-        return func(hf_api, *args, **kwargs)
+        cached = hf_cache.get("hf_api")
+        if cached is None or now - cached["time"] > settings.api_client_ttl:
+            cached = {"api": HfApi(token=settings.hugging_face_api_token), "time": now}
+            hf_cache["hf_api"] = cached
+
+        return func(cached["api"], *args, **kwargs)
 
     return wrapper
 
@@ -40,10 +31,12 @@ def with_api(func):
 @with_api
 def list_embed_models(
     api: HfApi, model_name: str | None = None, limit: int = 10
-) -> list[str]:
-    """Return ids of embedding models, most downloaded first.
+) -> list[dict]:
+    """Return embedding models, most downloaded first.
 
-    `model_name` is an optional substring filter on the model id.
+    `model_name` is an optional substring filter on the model id. The Hub's
+    listing carries no vector width, so `dimensions` is left to the caller —
+    reading it would cost one config fetch per model.
     """
     models = api.list_models(
         pipeline_tag=settings.embedding_pipeline_tag,
@@ -52,7 +45,14 @@ def list_embed_models(
         sort="downloads",
         limit=limit,
     )
-    return [model.id for model in models]
+    return [
+        {
+            "id": model.id,
+            "downloads": model.downloads,
+            "library": model.library_name,
+        }
+        for model in models
+    ]
 
 
 @with_api

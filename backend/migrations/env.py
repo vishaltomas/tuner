@@ -3,13 +3,14 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-# `models` is imported for the side effect of registering every table on
+from app.config import settings
+
+# `app.db.models` is imported for the side effect of registering every table on
 # Base.metadata. `alembic check` compares that metadata against the live schema,
 # which is how hand-written SQL migrations are kept honest — so a new model
 # module has to be imported here too.
-import models  # noqa: F401
-from config import settings
-from db import Base
+from app.db import models  # noqa: F401
+from app.db.session import Base
 
 config = context.config
 
