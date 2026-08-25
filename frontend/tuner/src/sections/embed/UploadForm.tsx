@@ -18,6 +18,7 @@ import { FALLBACK_MODELS } from '../../lib/api'
 import type { Source } from '../../lib/types'
 import { formatBytes } from '../../lib/utils'
 import { EmbeddingModelPicker } from './EmbeddingModelPicker'
+import { ModelDownload } from './ModelDownload'
 import { FileDropzone } from './FileDropzone'
 
 type Destination = 'new' | 'existing'
@@ -172,6 +173,7 @@ export function UploadForm({ sources, busy, onSubmit }: UploadFormProps) {
                 <Typography variant="caption" color="text.secondary">
                   Every document in this source is embedded with this model.
                 </Typography>
+                <ModelDownload modelId={model} disabled={busy} />
               </Box>
             </>
           ) : (

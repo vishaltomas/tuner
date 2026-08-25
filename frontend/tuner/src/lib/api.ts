@@ -1,4 +1,4 @@
-import type { EmbeddingModel, Source } from './types'
+import type { DownloadJob, EmbeddingModel, LocalModel, Source } from './types'
 
 const BASE = '/api'
 
@@ -151,4 +151,43 @@ export async function deleteDocument(sourceId: string, documentId: string): Prom
       typeof data === 'object' && data !== null && (data as { ok?: unknown }).ok === true,
   )
   return result !== null
+}
+
+const isDownloadJob = (data: unknown): data is DownloadJob =>
+  typeof data === 'object' &&
+  data !== null &&
+  typeof (data as DownloadJob).id === 'string' &&
+  typeof (data as DownloadJob).status === 'string'
+
+const isLocalModelList = (data: unknown): data is LocalModel[] =>
+  Array.isArray(data) &&
+  data.every(
+    (item) =>
+      typeof item === 'object' && item !== null && typeof (item as LocalModel).id === 'string',
+  )
+
+/**
+ * Queue a download and return the job to poll.
+ *
+ * The backend answers as soon as the job exists — the repo itself is fetched
+ * in the background, so this returns long before the model is on disk.
+ */
+export async function startModelDownload(modelId: string): Promise<DownloadJob | null> {
+  return request(
+    '/models/download',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model_id: modelId }),
+    },
+    isDownloadJob,
+  )
+}
+
+export async function fetchDownloadJob(jobId: string): Promise<DownloadJob | null> {
+  return request(`/jobs/${encodeURIComponent(jobId)}`, { method: 'GET' }, isDownloadJob)
+}
+
+export async function fetchLocalModels(): Promise<LocalModel[] | null> {
+  return request('/models/downloaded', { method: 'GET' }, isLocalModelList)
 }

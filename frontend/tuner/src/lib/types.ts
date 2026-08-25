@@ -45,3 +45,27 @@ export interface EmbedRequest {
   model: string
   files: File[]
 }
+
+export type DownloadStatus = 'queued' | 'running' | 'succeeded' | 'failed'
+
+/** A background model download, as the backend reports it while polling. */
+export interface DownloadJob {
+  id: string
+  modelId: string
+  status: DownloadStatus
+  /** Bytes on disk so far. */
+  downloadedBytes: number
+  /** Repo size, when the Hub reports per-file sizes. */
+  totalBytes?: number | null
+  error?: string | null
+  createdAt: string
+  updatedAt: string
+  finishedAt?: string | null
+}
+
+/** A model held locally, once its download has finished. */
+export interface LocalModel {
+  id: string
+  sizeBytes?: number | null
+  downloadedAt?: string | null
+}

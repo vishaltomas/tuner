@@ -21,3 +21,6 @@ Thumbs.db
 
 # Uploaded documents
 uploads/
+
+# Downloaded model snapshots
+backend/models/

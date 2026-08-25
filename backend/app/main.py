@@ -2,11 +2,11 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routes import router
 from app.db.session import engine, get_session
+from app.db.sql import sql
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ async def lifespan(app: FastAPI):
     """
     try:
         async with engine.connect() as connection:
-            await connection.execute(text("SELECT 1"))
+            await connection.execute(sql("health_check"))
         logger.info("database connection ok")
     except Exception:
         logger.warning("database unreachable at startup", exc_info=True)
@@ -47,7 +47,7 @@ async def root():
 async def health(session: AsyncSession = Depends(get_session)):
     """Report whether the process can currently reach Postgres."""
     try:
-        await session.execute(text("SELECT 1"))
+        await session.execute(sql("health_check"))
         return {"status": "ok", "database": "up"}
     except Exception:
         logger.warning("database health check failed", exc_info=True)

@@ -50,3 +50,28 @@ async def remove_document(path: Path) -> None:
 
 async def remove_source(source_id: UUID) -> None:
     await asyncio.to_thread(shutil.rmtree, source_dir(source_id), True)
+
+
+def model_path(model_id: str) -> Path:
+    """Where a Hub repo is unpacked, mirroring its `owner/name` id.
+
+    Callers must have validated the id first: it becomes a path, so a segment
+    like `..` would otherwise walk out of the models directory.
+    """
+    return BASE_DIR / settings.model_dir / model_id
+
+
+def _directory_size(path: Path) -> int:
+    return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+
+
+async def directory_size(path: Path) -> int:
+    """Total bytes of every file under `path`.
+
+    A snapshot is thousands of stat calls, so it runs off the event loop.
+    """
+    return await asyncio.to_thread(_directory_size, path)
+
+
+async def remove_model(model_id: str) -> None:
+    await asyncio.to_thread(shutil.rmtree, model_path(model_id), True)

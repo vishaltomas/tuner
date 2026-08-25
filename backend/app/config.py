@@ -25,5 +25,7 @@ class Settings(BaseSettings):
     # Where uploaded documents are written, relative to this directory.
     upload_dir: str = "uploads"
     model_search_limit: int = 10
+    # Where downloaded model snapshots are unpacked.
+    model_dir: str = "models"
 
 settings = Settings()

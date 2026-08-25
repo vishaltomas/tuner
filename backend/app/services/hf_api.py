@@ -82,3 +82,18 @@ async def download_model(api: HfApi, model_name: str, file_path: str) -> str:
         repo_id=model_name,
         local_dir=file_path,
     )
+
+
+@with_api
+def get_repo_size(api: HfApi, model_id: str) -> int | None:
+    """Total bytes of every file in a model repo, or None if the Hub is vague.
+
+    Asking for file metadata costs an extra round trip, so this is only worth
+    calling when the number is going to be shown — it is the denominator a
+    download's progress is measured against.
+    """
+    info = api.model_info(model_id, files_metadata=True)
+    sizes = [sibling.size for sibling in (info.siblings or [])]
+    if not sizes or any(size is None for size in sizes):
+        return None
+    return sum(sizes)
