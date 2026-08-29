@@ -12,10 +12,8 @@ from app.config import settings
 
 
 class Base(DeclarativeBase):
-    """Declarative base every ORM model inherits from.
-
-    Alembic autogenerate reads `Base.metadata`, so a model is only visible to
-    migrations once its module has been imported (see `migrations/env.py`).
+    """
+    Declarative base every ORM model inherits from.
     """
 
 
@@ -32,11 +30,8 @@ session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
-    """FastAPI dependency yielding a session that owns its transaction.
-
-    The session commits when the route returns and rolls back if it raises, so
-    routes only describe the change. `expire_on_commit=False` keeps ORM objects
-    readable after the commit, which response serialisation depends on.
+    """
+    FastAPI dependency yielding a session that owns its transaction.
     """
     async with session_factory() as session:
         try:

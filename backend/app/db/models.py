@@ -17,8 +17,10 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    REAL,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, UUID
@@ -128,6 +130,53 @@ class SourceDocument(Base):
     source: Mapped[Source] = relationship(back_populates="documents")
 
     __table_args__ = (Index("ix_source_documents_source_id", "source_id"),)
+
+
+class DocumentChunk(Base):
+    """One passage of one document, as chunked for embedding.
+
+    Written by `rag.native.NativeRAG`. The text is kept alongside whatever
+    vector is derived from it, because retrieval has to hand back something
+    readable: a vector alone cannot be shown to anyone. `tokens` is the length
+    the source's tokenizer measured, so nothing has to re-encode a passage to
+    know whether it fits the model.
+    """
+
+    __tablename__ = "document_chunks"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("source_documents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # Position within the document. Named `ordinal` because `index` reads as
+    # the DDL keyword everywhere it is written unquoted.
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Pages the passage drew on; null for a text file, which has none.
+    pages: Mapped[list[int] | None] = mapped_column(ARRAY(Integer))
+    # The passage as its model sees it, L2 normalised so cosine similarity is
+    # a dot product. Null until the passage has been embedded. REAL[] because
+    # pgvector is not installed; see migrations/sql/0005_upgrade.sql.
+    embedding: Mapped[list[float] | None] = mapped_column(ARRAY(REAL))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    document: Mapped["SourceDocument"] = relationship()
+
+    __table_args__ = (
+        # Chunking a document again replaces its passages, so a position can
+        # only appear once: a rerun that half-finished cannot leave two.
+        UniqueConstraint(
+            "document_id", "ordinal", name="uq_document_chunks_document_id_ordinal"
+        ),
+        Index("ix_document_chunks_document_id", "document_id"),
+    )
 
 
 class EmbeddingModel(Base):

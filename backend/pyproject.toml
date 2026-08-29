@@ -20,6 +20,12 @@ dependencies = [
     "psycopg[binary]>=3.2",
     # Required by FastAPI to parse the multipart uploads /embed takes.
     "python-multipart>=0.0.20",
+    # Parses uploaded documents into elements for app/rag/native.py. The [pdf]
+    # extra is not optional here: unstructured.partition.pdf imports
+    # unstructured_inference at module scope, so the layout stack (torch,
+    # onnxruntime) is pulled in even though chunking only ever asks pdfminer
+    # for the text a PDF already carries.
+    "unstructured[pdf]>=0.27.1",
 ]
 
 [project.optional-dependencies]

@@ -75,7 +75,7 @@ app/
     schemas.py     request and response bodies
   db/
     session.py     engine, session factory, get_session dependency
-    sql.py         loads app/sql/<name>.sql
+    sql.py         loads named statements from app/sql/
     models.py      schema of record, for `alembic check` only
   services/
     hf_api.py      Hugging Face Hub client
@@ -98,6 +98,26 @@ statement by name:
 ```python
 await session.execute(sql("job_progress"), {"id": job_id, "downloaded_bytes": size})
 ```
+
+The name is declared in the file, by a `-- name:` line introducing each
+statement, so a statement can move between files without touching the code that
+asks for it:
+
+```sql
+-- name: job_progress
+UPDATE download_jobs
+SET downloaded_bytes = :downloaded_bytes,
+    updated_at       = now()
+WHERE id = :id;
+```
+
+The files are grouped the way the schema is: one per table for the writes
+against it — `sources.sql`, `source_documents.sql`, `document_chunks.sql`,
+`embedding_models.sql`, `download_jobs.sql` — so everything that can break a
+table's invariants sits together, next to the constraints it has to respect.
+Reads cannot break an invariant, so all of them share `queries.sql`. A duplicate
+name across files is an error at load time, not a silent win for whichever file
+sorted last.
 
 Two rules the files follow, both enforced by how they are loaded:
 

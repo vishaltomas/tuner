@@ -6,6 +6,8 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+*.ipynb
+*_samples/
 
 # Node
 node_modules/
