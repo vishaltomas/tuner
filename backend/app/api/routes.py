@@ -8,6 +8,10 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import (
+    ChatCitationOut,
+    ChatDefaultsOut,
+    ChatReplyOut,
+    ChatRequest,
     DownloadJobOut,
     DownloadRequest,
     EmbeddingModelDetailOut,
@@ -20,6 +24,7 @@ from app.config import settings
 from app.db.models import DocumentKind
 from app.db.session import get_session
 from app.db.sql import sql
+from app.rag.chat import DEFAULT_SYSTEM, Chat
 from app.services import downloads, hf_api, storage
 
 logger = logging.getLogger(__name__)
@@ -162,8 +167,10 @@ async def embed(
 ) -> SourceOut:
     """Store an upload against a new or existing source.
 
-    The documents land as `queued`: this route owns the files and the rows, not
-    the embedding itself, which nothing runs yet.
+    Answers as soon as the files are on disk and the rows exist. Chunking and
+    embedding them runs in the background from there — it takes seconds to
+    minutes per document — so the documents come back `queued` and walk
+    themselves to `ready` or `failed`. Poll `/sources` to watch that happen.
     """
     if not files:
         raise HTTPException(status_code=400, detail="no files uploaded")
@@ -190,12 +197,14 @@ async def embed(
         source = result.mappings().one()
 
     written: list[Path] = []
+    queued: list[tuple[UUID, Path]] = []
     try:
         for upload, kind in zip(files, kinds, strict=True):
             document_id = uuid4()
             path = storage.document_path(source["id"], document_id, kind)
             size = await storage.save_upload(upload, path)
             written.append(path)
+            queued.append((document_id, path))
             await session.execute(
                 sql("document_create"),
                 {
@@ -213,6 +222,20 @@ async def embed(
         raise
 
     await session.execute(sql("source_touch"), {"id": source["id"]})
+
+    # The pipeline opens sessions of its own, so the rows it is about to move
+    # to `embedding` have to be visible to them — this request's own commit,
+    # which `get_session` makes after the response is built, comes too late.
+    await session.commit()
+
+    # Imported here rather than at module scope: `native` pulls in torch,
+    # transformers and unstructured's layout stack, and paying for that at
+    # import time would hold the server off its port for as long as it takes.
+    # `main.lifespan` warms it in the background, so by the time an upload
+    # lands this is a dictionary lookup.
+    from app.rag.native import NativeRAG
+
+    NativeRAG.queue(model, queued)
     return await one_source(session, source["id"])
 
 
@@ -277,6 +300,13 @@ async def merge_sources(
                     "id": document["id"],
                 },
             )
+            # The copied row carries the original's status and chunk count, so
+            # its vectors have to come with it — re-embedding would cost the
+            # whole corpus again to arrive at the same numbers.
+            await session.execute(
+                sql("chunks_copy_for_document"),
+                {"new_document_id": new_id, "document_id": document["id"]},
+            )
     except Exception:
         for path in copied:
             await storage.remove_document(path)
@@ -323,3 +353,112 @@ async def delete_document(
     await session.execute(sql("document_delete"), {"id": document_id})
     await storage.remove_document(path)
     return Ok()
+
+
+@router.post("/sources/{source_id}/embed", response_model=SourceOut)
+async def embed_source(
+    source_id: UUID, session: AsyncSession = Depends(get_session)
+) -> SourceOut:
+    """Run the pipeline again over a source's unembedded documents.
+
+    Picks up what `/embed` could not finish: a document uploaded before
+    anything ran the pipeline, one whose run was cut short by a restart, and
+    one that failed on a parse worth retrying. `ready` documents are left
+    alone — their vectors are already stored, and chunking is not incremental.
+    """
+    source = await source_row(session, source_id)
+    result = await session.execute(
+        sql("documents_unembedded"), {"source_id": source_id}
+    )
+    documents = result.mappings().all()
+
+    from app.rag.native import NativeRAG  # deferred; see `embed` above
+
+    NativeRAG.queue(
+        source["model"],
+        [
+            (
+                document["id"],
+                storage.document_path(
+                    source_id, document["id"], DocumentKind(document["kind"])
+                ),
+            )
+            for document in documents
+        ],
+    )
+    return await one_source(session, source_id)
+
+
+@router.get("/chat/defaults", response_model=ChatDefaultsOut)
+async def chat_defaults() -> ChatDefaultsOut:
+    """What the chat pane opens with: a system message, and what will answer.
+
+    The system message is served rather than hard-coded in the frontend so
+    the two cannot drift — the same string is what `/chat` falls back to when
+    the user clears the box.
+    """
+    return ChatDefaultsOut(
+        system=DEFAULT_SYSTEM,
+        model=settings.chat_model,
+        context_chunks=settings.chat_context_chunks,
+    )
+
+
+@router.post("/chat", response_model=ChatReplyOut)
+async def chat(
+    body: ChatRequest, session: AsyncSession = Depends(get_session)
+) -> ChatReplyOut:
+    """Answer a question from the passages in the chosen sources.
+
+    Every source has to share an embedding model: the question is embedded
+    once, and a vector can only be compared against passages that were put in
+    the same space. That is the same rule `/sources/merge` enforces, for the
+    same reason.
+    """
+    result = await session.execute(sql("sources_by_ids"), {"ids": body.source_ids})
+    picked = result.mappings().all()
+
+    missing = set(body.source_ids) - {row["id"] for row in picked}
+    if missing:
+        unknown = ", ".join(str(one) for one in sorted(missing))
+        raise HTTPException(status_code=404, detail=f"unknown source(s): {unknown}")
+
+    used = {row["model"] for row in picked}
+    if len(used) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"sources use different models: {', '.join(sorted(used))}; "
+                f"a question can only be asked of one embedding space at a time"
+            ),
+        )
+
+    conversation = Chat(
+        used.pop(), body.source_ids, system=body.system, top_k=body.top_k
+    )
+
+    try:
+        answer = await conversation.reply(
+            body.message, [(turn.role, turn.content) for turn in body.history]
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("chat completion failed", exc_info=True)
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"could not get an answer from {settings.chat_model}: "
+                f"{type(exc).__name__}"
+            ),
+        ) from exc
+
+    # `CamelModel` reads attributes, so the citation dataclasses validate as
+    # they are — they are slotted, and have no `__dict__` to unpack.
+    return ChatReplyOut(
+        answer=answer.text,
+        citations=[
+            ChatCitationOut.model_validate(citation) for citation in answer.citations
+        ],
+        model=settings.chat_model,
+    )

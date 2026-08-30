@@ -69,3 +69,48 @@ export interface LocalModel {
   sizeBytes?: number | null
   downloadedAt?: string | null
 }
+
+/** A turn in the chat transcript, as the browser holds it. */
+export interface ChatTurn {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  /** Passages the answer was given, on assistant turns that had any. */
+  citations?: ChatCitation[]
+  /** Set on an assistant turn the backend could not produce. */
+  error?: boolean
+  createdAt: string
+}
+
+/**
+ * One retrieved passage put in front of the model.
+ *
+ * `marker` is the number the answer cites in square brackets, so a `[2]` in
+ * the text and the citation numbered 2 are the same passage.
+ */
+export interface ChatCitation {
+  marker: number
+  chunkId: string
+  documentId: string
+  sourceId: string
+  documentName: string
+  /** Pages the passage drew on; empty for a text file, which has none. */
+  pages: number[]
+  /** Cosine similarity to the question, in [-1, 1]. */
+  score: number
+  text: string
+}
+
+export interface ChatReply {
+  answer: string
+  citations: ChatCitation[]
+  /** The served model that wrote the answer. */
+  model: string
+}
+
+/** What the chat pane opens with, before the first question is asked. */
+export interface ChatDefaults {
+  system: string
+  model: string
+  contextChunks: number
+}

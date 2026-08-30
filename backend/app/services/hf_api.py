@@ -2,7 +2,7 @@ import asyncio
 import functools
 import time
 
-from huggingface_hub import HfApi
+from huggingface_hub import HfApi, InferenceClient
 
 from app.config import settings
 
@@ -97,3 +97,37 @@ def get_repo_size(api: HfApi, model_id: str) -> int | None:
     if not sizes or any(size is None for size in sizes):
         return None
     return sum(sizes)
+
+
+@functools.cache
+def inference_client(model: str, provider: str) -> InferenceClient:
+    """Client for one served model, kept for the life of the process.
+
+    Unlike `HfApi` this holds no listing state that can go stale — it is a
+    thin wrapper over the inference endpoint — so it is cached outright rather
+    than on the `api_client_ttl` window.
+    """
+    return InferenceClient(
+        model=model, provider=provider, token=settings.hugging_face_api_token
+    )
+
+
+def chat(
+    messages: list[dict],
+    model: str,
+    provider: str,
+    max_tokens: int,
+    temperature: float,
+) -> str:
+    """One chat completion from the Inference API, as plain text.
+
+    Blocking: the client is synchronous and a completion runs for seconds, so
+    callers hand it to a thread. A served model that answers with no content —
+    a filtered or empty generation — comes back as an empty string, which the
+    caller reports rather than passing off as an answer.
+    """
+    completion = inference_client(model, provider).chat_completion(
+        messages=messages, max_tokens=max_tokens, temperature=temperature
+    )
+    choices = completion.choices or []
+    return (choices[0].message.content or "").strip() if choices else ""

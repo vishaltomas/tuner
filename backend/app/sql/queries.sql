@@ -54,6 +54,26 @@ JOIN sources s ON s.id = d.source_id
 WHERE s.model = :model
   AND c.embedding IS NOT NULL;
 
+-- name: chunks_for_sources
+-- Every embedded passage in the given sources. A chat is scoped to the
+-- sources the user picked rather than to every source sharing a model, so
+-- asking one knowledge base a question cannot pull an answer out of another.
+SELECT c.id, c.document_id, c.ordinal, c.text, c.tokens, c.pages, c.embedding,
+       d.name AS document_name, d.source_id
+FROM document_chunks c
+JOIN source_documents d ON d.id = c.document_id
+WHERE d.source_id = ANY(:source_ids)
+  AND c.embedding IS NOT NULL;
+
+-- name: documents_unembedded
+-- A source's documents that have no usable vectors: never run, interrupted
+-- part way, or failed. What a re-run of the pipeline picks up.
+SELECT *
+FROM source_documents
+WHERE source_id = :source_id
+  AND status <> 'ready'
+ORDER BY added_at, id;
+
 -- name: models_downloaded
 -- Models with a finished download. The catalogue also holds models that were
 -- only ever named, hence the filter.

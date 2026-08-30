@@ -28,4 +28,16 @@ class Settings(BaseSettings):
     # Where downloaded model snapshots are unpacked.
     model_dir: str = "models"
 
+    # Chat. Retrieval runs locally against the vectors in Postgres; the answer
+    # is written by a served model on the Hugging Face Inference API, reached
+    # with the same token the Hub search uses. `chat_provider` picks the
+    # inference partner — "auto" takes whichever one serves the model.
+    chat_model: str = "meta-llama/Llama-3.1-8B-Instruct"
+    chat_provider: str = "auto"
+    chat_max_tokens: int = 1024
+    chat_temperature: float = 0.2
+    # Passages put in front of the model per question. Each is at most one
+    # embedding model's context, so this is the knob that sets the prompt size.
+    chat_context_chunks: int = 6
+
 settings = Settings()

@@ -1,3 +1,5 @@
+import asyncio
+import importlib
 import logging
 from contextlib import asynccontextmanager
 
@@ -11,9 +13,29 @@ from app.db.sql import sql
 logger = logging.getLogger(__name__)
 
 
+async def warm_rag() -> None:
+    """Import the RAG stack in the background, off the critical path.
+
+    `app.rag.native` reaches torch, transformers and unstructured's layout
+    stack — tens of seconds of import, and minutes on a slow filesystem. At
+    module scope that would hold the server off its port for the whole of it,
+    even though most routes never touch any of it. Importing it here instead
+    means the app answers immediately and the stack loads behind it; a request
+    that arrives first simply waits on the import lock, which is exactly the
+    wait it would have paid anyway.
+    """
+    try:
+        await asyncio.to_thread(importlib.import_module, "app.rag.native")
+        logger.info("rag pipeline ready")
+    except Exception:
+        # Not fatal: everything but embedding and chat still works, and the
+        # routes that need it will raise the same error where it can be seen.
+        logger.warning("rag pipeline could not be imported", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Check the database once at boot and release the pool on shutdown.
+    """Check the database, warm the RAG stack, and release the pool on exit.
 
     A failed check warns rather than aborts: the Hugging Face routes do not
     need Postgres, so a down database should not block working on them. Ask
@@ -26,8 +48,12 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("database unreachable at startup", exc_info=True)
 
+    warming = asyncio.create_task(warm_rag())
+
     yield
 
+    # A shutdown during startup should not leave the import running.
+    warming.cancel()
     await engine.dispose()
 
 

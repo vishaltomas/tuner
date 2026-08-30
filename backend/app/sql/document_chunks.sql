@@ -11,3 +11,13 @@ VALUES (:id, :document_id, :ordinal, :text, :tokens, :pages, :embedding);
 -- incremental: a rerun replaces what the last one produced.
 DELETE FROM document_chunks
 WHERE document_id = :document_id;
+
+-- name: chunks_copy_for_document
+-- Carry one document's passages onto the copy of it a merge just made.
+-- Without this a merged source reports `ready` documents with no vectors
+-- behind them: the row says it can be searched and a search returns nothing.
+-- New ids, because a chunk belongs to exactly one document.
+INSERT INTO document_chunks (id, document_id, ordinal, text, tokens, pages, embedding)
+SELECT gen_random_uuid(), :new_document_id, ordinal, text, tokens, pages, embedding
+FROM document_chunks
+WHERE document_id = :document_id;

@@ -1,10 +1,10 @@
 import type { ReactNode } from 'react'
-import AutoAwesomeOutlinedIcon from '@mui/icons-material/AutoAwesomeOutlined'
+import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutlineOutlined'
 import LayersOutlinedIcon from '@mui/icons-material/LayersOutlined'
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined'
 import ViewInArOutlinedIcon from '@mui/icons-material/ViewInArOutlined'
 
-export type SectionId = 'embed' | 'models' | 'playground' | 'settings'
+export type SectionId = 'embed' | 'models' | 'chat' | 'settings'
 
 export interface NavItem {
   id: SectionId
@@ -23,11 +23,11 @@ export const NAV_ITEMS: NavItem[] = [
     icon: <LayersOutlinedIcon fontSize="small" />,
   },
   {
-    id: 'playground',
-    label: 'Playground',
-    description: 'Query your embedded sources and inspect the retrieved chunks.',
+    id: 'chat',
+    label: 'Chat',
+    description: 'Ask questions of your embedded sources and see the passages behind each answer.',
     group: 'Knowledge base',
-    icon: <AutoAwesomeOutlinedIcon fontSize="small" />,
+    icon: <ChatBubbleOutlineIcon fontSize="small" />,
   },
   {
     id: 'models',

@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -110,6 +111,67 @@ class MergeRequest(BaseModel):
     source_ids: list[UUID] = Field(min_length=1)
     name: str = Field(min_length=1, max_length=200)
     keep_originals: bool = False
+
+
+class ChatTurn(BaseModel):
+    """One earlier turn, replayed by the browser.
+
+    The conversation is not stored server-side — nothing here has a chat
+    table — so the client sends back what it is showing. Only the two roles a
+    transcript can hold are accepted; the system message travels separately,
+    on `ChatRequest`, where the user can edit it between turns.
+    """
+
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=20_000)
+
+
+class ChatRequest(BaseModel):
+    """Body of POST /chat, posted snake_case by the frontend."""
+
+    message: str = Field(min_length=1, max_length=20_000)
+    source_ids: list[UUID] = Field(min_length=1)
+    # The user's own system message. Empty or absent falls back to
+    # `rag.chat.DEFAULT_SYSTEM`, which is also what the UI seeds the box with.
+    system: str | None = Field(default=None, max_length=20_000)
+    history: list[ChatTurn] = Field(default_factory=list)
+    # Passages retrieved for this question; defaults to `chat_context_chunks`.
+    top_k: int | None = Field(default=None, ge=1, le=50)
+
+
+class ChatCitationOut(CamelModel):
+    """A passage the answer was allowed to draw on.
+
+    Every retrieved passage is returned, cited or not: the marker is the
+    model's to use, and the reader is better served seeing what was in front
+    of it than only the parts it chose to point at.
+    """
+
+    marker: int
+    chunk_id: UUID
+    document_id: UUID
+    source_id: UUID
+    document_name: str
+    pages: list[int]
+    # Cosine similarity to the question, in [-1, 1].
+    score: float
+    text: str
+
+
+class ChatReplyOut(CamelModel):
+    answer: str
+    citations: list[ChatCitationOut]
+    # Echoed back so the UI can name the model that wrote the answer without
+    # a second round trip for the setting.
+    model: str
+
+
+class ChatDefaultsOut(CamelModel):
+    """What the chat pane needs before the first question is asked."""
+
+    system: str
+    model: str
+    context_chunks: int
 
 
 class Ok(BaseModel):

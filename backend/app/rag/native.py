@@ -4,10 +4,12 @@ RAG module
 
 import asyncio
 import logging
+import threading
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
+from typing import ClassVar
 from uuid import UUID, uuid4
 
 from torch import no_grad
@@ -233,6 +235,11 @@ class NativeRAG:
                     the number of specified chunks
     """
 
+    # A task holds the only reference to the coroutine driving a pipeline run,
+    # and asyncio keeps just a weak one — a run left to itself can be collected
+    # mid-flight. Tasks stay in here until they finish.
+    _running: ClassVar[set[asyncio.Task]] = set()
+
     def __init__(
         self,
         model: str,
@@ -245,6 +252,52 @@ class NativeRAG:
             model, max_tokens=max_tokens, overlap_sentences=overlap_sentences
         )
         self.embedding_model = None
+        # `embed` runs in whatever thread its caller handed it to, and an
+        # upload and a question can arrive at once. Without this the two race
+        # to build the model and each pays for a copy of the weights.
+        self._load_lock = threading.Lock()
+
+    @staticmethod
+    @cache
+    def shared(model: str) -> "NativeRAG":
+        """The pipeline for one embedding model, built once.
+
+        Both halves — storing an upload and answering a question — need the
+        weights in memory, and they are hundreds of megabytes. Constructing per
+        request would load them per request; the tokenizer behind `Chunking` is
+        cached the same way and for the same reason.
+
+        Blocking on first call for a model: callers hand it to a thread.
+        """
+        return NativeRAG(model)
+
+    @classmethod
+    def queue(cls, model: str, documents: Sequence[tuple[UUID, Path]]) -> None:
+        """Run the pipeline over an upload, in the background.
+
+        `/embed` answers as soon as the files are on disk and the rows exist —
+        chunking and embedding a document takes seconds to minutes, far longer
+        than a request should be held open. The documents are marked
+        `embedding` by `store` and reach `ready` or `failed` there too, so a
+        caller polling `/sources` sees the run without this returning anything.
+
+        Detached, so every failure has to land on a row; anything `store` does
+        not already catch is logged here rather than dying silently in a task
+        nobody awaits.
+        """
+        if not documents:
+            return
+
+        async def run() -> None:
+            try:
+                pipeline = await asyncio.to_thread(cls.shared, model)
+                await pipeline.store(documents)
+            except Exception:
+                logger.exception("embedding run for %s failed", model)
+
+        task = asyncio.create_task(run())
+        cls._running.add(task)
+        task.add_done_callback(cls._running.discard)
 
     async def store(self, documents: Iterable[tuple[UUID, Path]]) -> dict[UUID, int]:
         """Chunk each document and write its passages, returning the counts.
@@ -254,6 +307,19 @@ class NativeRAG:
         forty-nine. The failure has to land on the row, because nothing is
         watching this coroutine to be told about it.
         """
+        documents = list(documents)
+        if not documents:
+            return {}
+
+        # Claimed up front rather than per document, so a source shows the
+        # whole run as underway instead of one file at a time.
+        async with session_factory() as session:
+            await session.execute(
+                sql("documents_embedding"),
+                {"ids": [document_id for document_id, _ in documents]},
+            )
+            await session.commit()
+
         stored: dict[UUID, int] = {}
 
         for document_id, path in documents:
@@ -293,11 +359,16 @@ class NativeRAG:
         Blocking and CPU-bound; callers hand it to a thread.
         """
         if self.embedding_model is None:
-            local = storage.model_path(self.model)
-            self.embedding_model = AutoModel.from_pretrained(
-                str(local) if local.is_dir() else self.model
-            )
-            self.embedding_model.eval()
+            with self._load_lock:
+                # Checked again inside: whoever waited on the lock is looking
+                # at a model the holder has already built.
+                if self.embedding_model is None:
+                    local = storage.model_path(self.model)
+                    model = AutoModel.from_pretrained(
+                        str(local) if local.is_dir() else self.model
+                    )
+                    model.eval()
+                    self.embedding_model = model
 
         tokenizer = Chunking.tokenizer(self.model)
         vectors: list[list[float]] = []
@@ -318,12 +389,21 @@ class NativeRAG:
 
         return vectors
 
-    async def query(self, query_text: str, num_context_chunks: int = 10) -> list[dict]:
+    async def query(
+        self,
+        query_text: str,
+        num_context_chunks: int = 10,
+        source_ids: Sequence[UUID] | None = None,
+    ) -> list[dict]:
         """The passages closest to a question, nearest first.
 
         The question is embedded with the same model the passages were, since
         two models put the same sentence in different spaces and a similarity
-        across them means nothing. Only sources using this model are searched.
+        across them means nothing. `source_ids` narrows the search to chosen
+        sources — what a chat scoped to one knowledge base wants; without it
+        every source using this model is searched. The caller is the one that
+        has to have checked those sources share this model: nothing here can
+        tell a vector from the wrong space by looking at it.
 
         The comparison happens here rather than in Postgres: without pgvector
         there is no cosine operator to order by and no index to serve it, so
@@ -331,11 +411,15 @@ class NativeRAG:
         fine for a corpus that fits in memory, and the thing to replace with a
         `vector` column when the extension is available.
         """
+        statement, params = (
+            ("chunks_for_sources", {"source_ids": list(source_ids)})
+            if source_ids is not None
+            else ("chunks_for_model", {"model": self.model})
+        )
+
         async with session_factory() as session:
             rows = (
-                (await session.execute(sql("chunks_for_model"), {"model": self.model}))
-                .mappings()
-                .all()
+                (await session.execute(sql(statement), params)).mappings().all()
             )
 
         if not rows:

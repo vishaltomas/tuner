@@ -6,12 +6,13 @@ import { NAV_ITEMS, type SectionId } from './components/layout/navigation'
 import { useSources } from './hooks/useSources'
 import { totalChunks } from './lib/utils'
 import { ComingSoon } from './sections/ComingSoon'
+import { ChatSection } from './sections/chat/ChatSection'
 import { EmbedDocumentsSection } from './sections/embed/EmbedDocumentsSection'
 
 function App() {
   const [section, setSection] = useState<SectionId>('embed')
   const [navOpen, setNavOpen] = useState(false)
-  const { sources, loading, embed, merge, removeSource, removeDocument } = useSources()
+  const { sources, loading, embed, merge, reembed, removeSource, removeDocument } = useSources()
 
   const vectorCount = sources.reduce((sum, source) => sum + totalChunks(source.documents), 0)
   const activeItem = NAV_ITEMS.find((item) => item.id === section) ?? NAV_ITEMS[0]
@@ -31,7 +32,7 @@ function App() {
         />
 
         <Box component="main" className="min-w-0 flex-1 overflow-y-auto">
-          {section === 'embed' ? (
+          {section === 'embed' && (
             <EmbedDocumentsSection
               sources={sources}
               loading={loading}
@@ -40,9 +41,9 @@ function App() {
               removeSource={removeSource}
               removeDocument={removeDocument}
             />
-          ) : (
-            <ComingSoon item={activeItem} />
           )}
+          {section === 'chat' && <ChatSection sources={sources} reembed={reembed} />}
+          {section !== 'embed' && section !== 'chat' && <ComingSoon item={activeItem} />}
         </Box>
       </Box>
     </Box>

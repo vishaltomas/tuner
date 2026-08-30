@@ -4,6 +4,9 @@ import { readSources, writeSources } from '../lib/storage'
 import type { Source, SourceDocument } from '../lib/types'
 import { estimateChunks, kindOf, uid } from '../lib/utils'
 
+/** How often the source list is re-read while documents are embedding. */
+const POLL_MS = 2500
+
 interface EmbedInput {
   /** Existing source to append to, or `null` to create a new one. */
   sourceId: string | null
@@ -44,6 +47,27 @@ export function useSources() {
       cancelled = true
     }
   }, [])
+
+  // Embedding runs in the background on the server and reports itself only on
+  // the document rows, so the list is re-read while anything is still in
+  // flight. The poll stops as soon as every document has settled, which is
+  // what keeps an idle tab from talking to the backend forever.
+  const working = sources.some((source) =>
+    source.documents.some((doc) => doc.status === 'queued' || doc.status === 'embedding'),
+  )
+
+  useEffect(() => {
+    if (!working) return
+    const timer = window.setInterval(() => {
+      void (async () => {
+        const remote = await api.fetchSources()
+        // A `null` is the backend being unreachable; the local mirror is a
+        // better answer than an empty list.
+        if (remote) setSources(remote)
+      })()
+    }, POLL_MS)
+    return () => window.clearInterval(timer)
+  }, [working])
 
   // Mirror every change locally so a reload does not lose the user's setup.
   useEffect(() => {
@@ -177,6 +201,14 @@ export function useSources() {
     [sources],
   )
 
+  /** Ask the backend to run the pipeline again over what it has not embedded. */
+  const reembed = useCallback(async (sourceId: string) => {
+    const remote = await api.reembedSource(sourceId)
+    if (remote) {
+      setSources((prev) => prev.map((source) => (source.id === remote.id ? remote : source)))
+    }
+  }, [])
+
   const removeSource = useCallback(async (sourceId: string) => {
     await api.deleteSource(sourceId)
     setSources((prev) => prev.filter((source) => source.id !== sourceId))
@@ -197,5 +229,5 @@ export function useSources() {
     )
   }, [])
 
-  return { sources, loading, embed, merge, removeSource, removeDocument }
+  return { sources, loading, embed, merge, reembed, removeSource, removeDocument }
 }

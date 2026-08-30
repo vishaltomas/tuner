@@ -1,4 +1,12 @@
-import type { DownloadJob, EmbeddingModel, LocalModel, Source } from './types'
+import type {
+  ChatDefaults,
+  ChatReply,
+  ChatTurn,
+  DownloadJob,
+  EmbeddingModel,
+  LocalModel,
+  Source,
+} from './types'
 
 const BASE = '/api'
 
@@ -190,4 +198,98 @@ export async function fetchDownloadJob(jobId: string): Promise<DownloadJob | nul
 
 export async function fetchLocalModels(): Promise<LocalModel[] | null> {
   return request('/models/downloaded', { method: 'GET' }, isLocalModelList)
+}
+
+const isChatReply = (data: unknown): data is ChatReply =>
+  typeof data === 'object' &&
+  data !== null &&
+  typeof (data as ChatReply).answer === 'string' &&
+  Array.isArray((data as ChatReply).citations)
+
+const isChatDefaults = (data: unknown): data is ChatDefaults =>
+  typeof data === 'object' &&
+  data !== null &&
+  typeof (data as ChatDefaults).system === 'string' &&
+  typeof (data as ChatDefaults).model === 'string'
+
+export async function fetchChatDefaults(): Promise<ChatDefaults | null> {
+  return request('/chat/defaults', { method: 'GET' }, isChatDefaults)
+}
+
+/** Re-run the embedding pipeline over a source's unembedded documents. */
+export async function reembedSource(sourceId: string): Promise<Source | null> {
+  return request(
+    `/sources/${encodeURIComponent(sourceId)}/embed`,
+    { method: 'POST' },
+    isSource,
+  )
+}
+
+export interface ChatPayload {
+  message: string
+  sourceIds: string[]
+  system: string
+  history: ChatTurn[]
+  topK?: number
+}
+
+export type ChatResult = { reply: ChatReply } | { error: string }
+
+/**
+ * Ask a question of the chosen sources.
+ *
+ * Unlike the rest of this module a failure comes back as a message rather
+ * than a `null`. Chat fails for reasons the user can act on — sources
+ * embedded with different models, nothing embedded yet, the inference API
+ * refusing the configured model — and collapsing those into "something went
+ * wrong" would leave them with no idea what to change.
+ *
+ * A question can wait on a cold embedding model, so this gets a longer
+ * timeout than `request` allows.
+ */
+export async function sendChat(payload: ChatPayload): Promise<ChatResult> {
+  try {
+    const response = await fetch(`${BASE}/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(180_000),
+      body: JSON.stringify({
+        message: payload.message,
+        source_ids: payload.sourceIds,
+        system: payload.system,
+        top_k: payload.topK,
+        // Only the transcript, and only what the backend accepts: markers and
+        // citations are ours to render, not part of what the model was told.
+        history: payload.history
+          .filter((turn) => !turn.error)
+          .map((turn) => ({ role: turn.role, content: turn.content })),
+      }),
+    })
+
+    if (!response.ok) {
+      setStatus(response.status >= 500 ? 'offline' : 'online')
+      return { error: await errorDetail(response) }
+    }
+
+    const data: unknown = await response.json()
+    setStatus('online')
+    return isChatReply(data)
+      ? { reply: data }
+      : { error: 'The backend answered with something this app does not understand.' }
+  } catch {
+    setStatus('offline')
+    return { error: 'The backend did not answer. Check that it is running on port 8000.' }
+  }
+}
+
+/** FastAPI puts the reason in `detail`; fall back to the status line. */
+async function errorDetail(response: Response): Promise<string> {
+  try {
+    const body: unknown = await response.json()
+    const detail = (body as { detail?: unknown }).detail
+    if (typeof detail === 'string' && detail) return detail
+  } catch {
+    // Not JSON, or an empty body — the status is all there is.
+  }
+  return `The backend refused the request (${response.status}).`
 }

@@ -16,6 +16,17 @@ FROM source_documents
 WHERE id = :id
 RETURNING *;
 
+-- name: documents_embedding
+-- Claim a batch of documents for a pipeline run. The previous run's count and
+-- error go with it: while a document is being embedded neither describes it,
+-- and leaving a stale error on a row that is being retried reads as a failure
+-- that has already happened again.
+UPDATE source_documents
+SET status = 'embedding',
+    chunks = NULL,
+    error  = NULL
+WHERE id = ANY(:ids);
+
 -- name: document_processed
 -- Record how a document's pass through the pipeline ended: chunked, embedded
 -- and stored, or failed. `chunks` is the passage count on the way through and
