@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     model_search_limit: int = 10
     # Where downloaded model snapshots are unpacked.
     model_dir: str = "models"
+    # Where the `.flow` files live. `main.flow` in here is where a run starts.
+    flow_dir: str = "flows"
 
     # Chat. Retrieval runs locally against the vectors in Postgres; the answer
     # is written by a served model on the Hugging Face Inference API, reached

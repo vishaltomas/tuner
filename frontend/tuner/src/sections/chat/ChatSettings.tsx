@@ -51,12 +51,11 @@ export function ChatSettings({
   const model = sources.find((source) => sourceIds.includes(source.id))?.model ?? null
 
   return (
-    // The rail is a fixed-height flex item beside the transcript, and its
-    // cards together are taller than it. Without `shrink-0` on each they are
-    // squeezed below their own content and clip — the inner scroll areas make
-    // their min-content height small enough for the browser to allow it. So
-    // the cards keep their size and the rail itself takes the scroll.
-    <Box className="flex w-full shrink-0 flex-col gap-4 lg:w-80 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
+    // Rendered inside the chat rail, which owns the width and the scroll.
+    // Each card keeps `shrink-0` so it is not squeezed below its own content:
+    // the inner scroll areas make their min-content height small enough that
+    // the browser would otherwise be free to clip them.
+    <Box className="flex flex-col gap-4">
       <Card className="shrink-0">
         <CardHeader
           title="Sources"

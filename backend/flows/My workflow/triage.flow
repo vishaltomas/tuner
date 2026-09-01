@@ -1,0 +1,33 @@
+{
+  "nodes": [
+    {
+      "id": "t",
+      "kind": "source",
+      "position": {
+        "x": 80.0,
+        "y": 60.0
+      },
+      "config": {
+        "sourceType": "txt",
+        "label": "Triage note",
+        "text": "Escalate any question about oxygen therapy to the ICU team."
+      }
+    },
+    {
+      "id": "a",
+      "kind": "answer",
+      "position": {
+        "x": 80.0,
+        "y": 280.0
+      },
+      "config": {}
+    }
+  ],
+  "edges": [
+    {
+      "id": "ta",
+      "source": "t",
+      "target": "a"
+    }
+  ]
+}

@@ -61,3 +61,4 @@ export function writeChatSettings(settings: ChatSettings): void {
     // Quota or private-mode failures are not worth interrupting the user for.
   }
 }
+

@@ -3,6 +3,7 @@ import functools
 import time
 
 from huggingface_hub import HfApi, InferenceClient
+from huggingface_hub.errors import HfHubHTTPError
 
 from app.config import settings
 
@@ -99,6 +100,10 @@ def get_repo_size(api: HfApi, model_id: str) -> int | None:
     return sum(sizes)
 
 
+class ChatCreditsError(Exception):
+    """The Inference API refused for want of credit, not for want of a model."""
+
+
 @functools.cache
 def inference_client(model: str, provider: str) -> InferenceClient:
     """Client for one served model, kept for the life of the process.
@@ -126,8 +131,23 @@ def chat(
     a filtered or empty generation — comes back as an empty string, which the
     caller reports rather than passing off as an answer.
     """
-    completion = inference_client(model, provider).chat_completion(
-        messages=messages, max_tokens=max_tokens, temperature=temperature
-    )
+    try:
+        completion = inference_client(model, provider).chat_completion(
+            messages=messages, max_tokens=max_tokens, temperature=temperature
+        )
+    except HfHubHTTPError as exc:
+        # 402 is the Inference API saying the token is out of credit. It is
+        # the one failure here the user can actually do something about, and
+        # "HfHubHTTPError" tells them none of it.
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status == 402:
+            raise ChatCreditsError(
+                f"the Hugging Face token is out of inference credit for "
+                f"{model!r}. Wait for the monthly allowance to reset, add "
+                f"credit, or set CHAT_MODEL to a model served for free — "
+                f"CHAT_PROVIDER=hf-inference keeps it on Hugging Face's own "
+                f"endpoint rather than a paid partner."
+            ) from exc
+        raise
     choices = completion.choices or []
     return (choices[0].message.content or "").strip() if choices else ""

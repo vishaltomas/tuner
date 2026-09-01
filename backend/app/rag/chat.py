@@ -10,7 +10,7 @@ import asyncio
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from app.config import settings
 from app.services import hf_api
@@ -63,8 +63,9 @@ class Citation:
 
     marker: int
     chunk_id: UUID
-    document_id: UUID
-    source_id: UUID
+    #: Absent on a supplied passage, which belongs to no document.
+    document_id: UUID | None
+    source_id: UUID | None
     document_name: str
     pages: list[int]
     score: float
@@ -88,33 +89,65 @@ class Chat:
 
     def __init__(
         self,
-        model: str,
+        model: str | None,
         source_ids: Sequence[UUID],
         *,
         system: str | None = None,
         top_k: int | None = None,
+        notes: Sequence[dict] = (),
     ):
         self.model = model
         self.source_ids = list(source_ids)
         self.system = (system or "").strip() or DEFAULT_SYSTEM
         self.top_k = top_k or settings.chat_context_chunks
+        # Passages supplied rather than retrieved: text typed into a Source
+        # widget, and what an Agent widget's own flow answered. They are put in
+        # front of the model exactly as given, and cited the same way, so an
+        # answer resting on one can still be traced to where it came from.
+        self.notes = [
+            {
+                "label": note.get("label") or "Note",
+                "text": (note.get("text") or "").strip(),
+            }
+            for note in notes
+            if (note.get("text") or "").strip()
+        ]
 
     async def reply(
         self, question: str, history: Sequence[tuple[str, str]] = ()
     ) -> Answer:
         """Retrieve, prompt, and answer.
         """
-        from app.rag.native import NativeRAG
+        rows: list[dict] = []
+        # Only worth loading the embedding stack when there is something to
+        # search: a flow made only of text and Agent widgets never touches it.
+        if self.model and self.source_ids:
+            from app.rag.native import NativeRAG
 
-        pipeline = await asyncio.to_thread(NativeRAG.shared, self.model)
-        rows = await pipeline.query(
-            question, num_context_chunks=self.top_k, source_ids=self.source_ids
-        )
+            pipeline = await asyncio.to_thread(NativeRAG.shared, self.model)
+            rows = await pipeline.query(
+                question, num_context_chunks=self.top_k, source_ids=self.source_ids
+            )
 
-        if not rows:
+        if not rows and not self.notes:
             return Answer(text=NO_PASSAGES, citations=[])
 
+        # Supplied passages come first: they were put there deliberately, while
+        # the retrieved ones are whatever the question happened to match.
         citations = [
+            Citation(
+                marker=marker,
+                chunk_id=uuid5(NAMESPACE_URL, f"note:{note['label']}:{note['text']}"),
+                document_id=None,
+                source_id=None,
+                document_name=note["label"],
+                pages=[],
+                # Not a similarity: nothing ranked it, it was handed over.
+                score=1.0,
+                text=note["text"],
+            )
+            for marker, note in enumerate(self.notes, start=1)
+        ] + [
             Citation(
                 marker=marker,
                 chunk_id=row["id"],
@@ -125,7 +158,7 @@ class Chat:
                 score=row["score"],
                 text=row["text"],
             )
-            for marker, row in enumerate(rows, start=1)
+            for marker, row in enumerate(rows, start=len(self.notes) + 1)
         ]
 
         passages = "\n\n".join(

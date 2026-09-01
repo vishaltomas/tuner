@@ -114,3 +114,77 @@ export interface ChatDefaults {
   model: string
   contextChunks: number
 }
+
+/**
+ * Kinds of widget a flow can hold.
+ *
+ * Adding one is an entry in `sections/workflow/widgets.ts`, an icon in
+ * `icons.tsx`, and a case here — the canvas, the inspector and the rail all
+ * read the registry rather than switching on the kind themselves.
+ */
+export type WidgetKind = 'source' | 'agent' | 'system' | 'retrieval' | 'answer'
+
+/** What a Source widget stands for. */
+export type SourceType = 'files' | 'txt' | 'chat'
+
+/** Per-kind settings. Every field is optional: a widget starts unconfigured. */
+export interface WidgetConfig {
+  /** `source`: which kind of source this is. Defaults to `files`. */
+  sourceType?: SourceType
+  /** `source` + `files`: the embedded source to retrieve from. */
+  sourceId?: string
+  /** `source` + `txt`: text put in front of the model as written. */
+  text?: string
+  /** `source` + `txt`, and `agent`: what the passage is called in a citation. */
+  label?: string
+  /** `agent`: the `.flow` file this widget runs as a sub-flow. */
+  flow?: string
+  /** `system`: the standing instructions. */
+  system?: string
+  /** `retrieval`: passages put in front of the model per question. */
+  topK?: number
+}
+
+export interface FlowNode {
+  id: string
+  kind: WidgetKind
+  /** Canvas position, in flow coordinates. */
+  position: { x: number; y: number }
+  config: WidgetConfig
+}
+
+export interface FlowEdge {
+  id: string
+  source: string
+  target: string
+}
+
+/** The canvas itself. Stored as one `.flow` file; nothing queries inside it. */
+export interface FlowGraph {
+  nodes: FlowNode[]
+  edges: FlowEdge[]
+}
+
+/** One workflow: a directory of flows, with its own `main.flow`. */
+export interface Workflow {
+  name: string
+  /** How many `.flow` files it holds, `main.flow` included. */
+  flows: number
+  updatedAt: string
+}
+
+/** One `.flow` file, as the explorer lists it. */
+export interface FlowFile {
+  name: string
+  size: number
+  updatedAt: string
+  /** `main.flow` is where a run starts; the explorer pins it to the top. */
+  isMain: boolean
+}
+
+/** A flow file and what is drawn in it. */
+export interface Flow {
+  name: string
+  isMain: boolean
+  graph: FlowGraph
+}

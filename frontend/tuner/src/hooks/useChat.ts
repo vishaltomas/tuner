@@ -40,6 +40,14 @@ export function useChat(sources: Source[]) {
   // The reason the last question failed, shown above the composer. Cleared
   // when the next one is asked.
   const [error, setError] = useState<string | null>(null)
+  // The workflow answering, if one is. Nothing here reads its flows: the
+  // backend compiles and executes them, so this only has to know whether to
+  // defer to it or fall back on the manual controls.
+  const [workflow, setWorkflow] = useState<string | null>(null)
+
+  const active = workflow
+    ? { sourceIds: [] as string[], system: '', topK: undefined as number | undefined }
+    : { sourceIds, system, topK }
 
   useEffect(() => {
     let cancelled = false
@@ -79,7 +87,7 @@ export function useChat(sources: Source[]) {
   const send = useCallback(
     async (message: string) => {
       const question = message.trim()
-      if (!question || busy || sourceIds.length === 0) return
+      if (!question || busy || (!workflow && active.sourceIds.length === 0)) return
 
       const asked: ChatTurn = {
         id: uid('turn'),
@@ -96,7 +104,15 @@ export function useChat(sources: Source[]) {
       setBusy(true)
       setError(null)
 
-      const result = await api.sendChat({ message: question, sourceIds, system, history, topK })
+      const result = await api.sendChat({
+        message: question,
+        useFlow: Boolean(workflow),
+        workflow,
+        sourceIds: active.sourceIds,
+        system: active.system,
+        history,
+        topK: active.topK,
+      })
 
       setTurns((previous) => [
         ...previous,
@@ -119,7 +135,7 @@ export function useChat(sources: Source[]) {
       if ('error' in result) setError(result.error)
       setBusy(false)
     },
-    [busy, sourceIds, system, topK, turns],
+    [active.sourceIds, active.system, active.topK, busy, turns, workflow],
   )
 
   const clear = useCallback(() => {
@@ -132,6 +148,11 @@ export function useChat(sources: Source[]) {
   return {
     defaults,
     turns,
+    /** What the next question will actually run with. */
+    active,
+    /** The workflow answering, or null when the rail is driven by hand. */
+    workflow,
+    setWorkflow,
     system,
     setSystem,
     resetSystem,

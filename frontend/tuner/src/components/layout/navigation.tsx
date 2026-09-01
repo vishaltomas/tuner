@@ -1,10 +1,11 @@
 import type { ReactNode } from 'react'
+import AccountTreeOutlinedIcon from '@mui/icons-material/AccountTreeOutlined'
 import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutlineOutlined'
 import LayersOutlinedIcon from '@mui/icons-material/LayersOutlined'
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined'
 import ViewInArOutlinedIcon from '@mui/icons-material/ViewInArOutlined'
 
-export type SectionId = 'embed' | 'models' | 'chat' | 'settings'
+export type SectionId = 'embed' | 'models' | 'chat' | 'workflow' | 'settings'
 
 export interface NavItem {
   id: SectionId
@@ -28,6 +29,13 @@ export const NAV_ITEMS: NavItem[] = [
     description: 'Ask questions of your embedded sources and see the passages behind each answer.',
     group: 'Knowledge base',
     icon: <ChatBubbleOutlineIcon fontSize="small" />,
+  },
+  {
+    id: 'workflow',
+    label: 'Workflow',
+    description: 'Wire sources and widgets into a graph, then run it from Chat.',
+    group: 'Knowledge base',
+    icon: <AccountTreeOutlinedIcon fontSize="small" />,
   },
   {
     id: 'models',

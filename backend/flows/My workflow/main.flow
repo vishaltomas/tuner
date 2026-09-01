@@ -1,0 +1,81 @@
+{
+  "nodes": [
+    {
+      "id": "f",
+      "kind": "source",
+      "position": {
+        "x": 60.0,
+        "y": 40.0
+      },
+      "config": {
+        "sourceType": "files",
+        "sourceId": "48072172-9047-4e21-b96d-119955d05917"
+      }
+    },
+    {
+      "id": "r",
+      "kind": "retrieval",
+      "position": {
+        "x": 60.0,
+        "y": 240.0
+      },
+      "config": {
+        "topK": 4
+      }
+    },
+    {
+      "id": "ag",
+      "kind": "agent",
+      "position": {
+        "x": 340.0,
+        "y": 40.0
+      },
+      "config": {
+        "flow": "triage.flow",
+        "label": "Triage desk"
+      }
+    },
+    {
+      "id": "sys",
+      "kind": "system",
+      "position": {
+        "x": 620.0,
+        "y": 40.0
+      },
+      "config": {
+        "system": "Answer in two short sentences."
+      }
+    },
+    {
+      "id": "a",
+      "kind": "answer",
+      "position": {
+        "x": 340.0,
+        "y": 440.0
+      },
+      "config": {}
+    }
+  ],
+  "edges": [
+    {
+      "id": "fr",
+      "source": "f",
+      "target": "r"
+    },
+    {
+      "id": "ra",
+      "source": "r",
+      "target": "a"
+    },
+    {
+      "id": "aga",
+      "source": "ag",
+      "target": "a"
+    },
+    {
+      "id": "sysa",
+      "source": "sys",
+      "target": "a"
+    }
+  ]
+}

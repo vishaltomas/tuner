@@ -26,3 +26,8 @@ uploads/
 
 # Downloaded model snapshots
 backend/models/
+
+# Half-written flows. A flow is saved by writing beside it and moving it into
+# place, so a crash mid-save can leave one of these; the .flow files themselves
+# are meant to be committed.
+*.flow.tmp

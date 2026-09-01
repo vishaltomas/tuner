@@ -16,16 +16,24 @@ from app.api.schemas import (
     DownloadRequest,
     EmbeddingModelDetailOut,
     EmbeddingModelOut,
+    FlowFileOut,
+    FlowGraphIn,
+    FlowOut,
     MergeRequest,
+    NameIn,
     Ok,
     SourceOut,
+    WorkflowOut,
 )
 from app.config import settings
 from app.db.models import DocumentKind
 from app.db.session import get_session
 from app.db.sql import sql
 from app.rag.chat import DEFAULT_SYSTEM, Chat
+from app.rag.workflow import Workflow, WorkflowError
 from app.services import downloads, hf_api, storage
+from app.services.flows import MAIN, FlowError, flows
+from app.services.hf_api import ChatCreditsError
 
 logger = logging.getLogger(__name__)
 
@@ -389,6 +397,129 @@ async def embed_source(
     return await one_source(session, source_id)
 
 
+def named(name: str, *, flow: bool = False, workflow: str = "") -> str:
+    """A name from the browser, or a 400 saying why it is not one."""
+    try:
+        if flow:
+            flows.path(workflow, name)
+        else:
+            flows.workflow_path(name)
+    except FlowError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return name
+
+
+def flow_status(exc: FlowError) -> int:
+    """404 for something that is not there, 409 for something refused."""
+    return 404 if str(exc).startswith("there is no") else 409
+
+
+@router.get("/workflows", response_model=list[WorkflowOut])
+async def list_workflows():
+    """Every workflow, alphabetically.
+
+    A default workflow is created if there are none, and flows left at the
+    root by the earlier flat layout are moved into it — so an existing install
+    keeps its work instead of appearing to have lost it.
+    """
+    await flows.ensure()
+    return [WorkflowOut.model_validate(one) for one in await flows.list_workflows()]
+
+
+@router.post("/workflows", response_model=WorkflowOut, status_code=201)
+async def create_workflow(body: NameIn) -> WorkflowOut:
+    """Create a workflow, with an empty `main.flow` ready in it."""
+    try:
+        created = await flows.create_workflow(named(body.name))
+    except FlowError as exc:
+        raise HTTPException(status_code=flow_status(exc), detail=str(exc)) from exc
+    return WorkflowOut.model_validate(created)
+
+
+@router.post("/workflows/{workflow}/rename", response_model=WorkflowOut)
+async def rename_workflow(workflow: str, body: NameIn) -> WorkflowOut:
+    """Rename a workflow. Its flows move with it, untouched."""
+    try:
+        renamed = await flows.rename_workflow(named(workflow), named(body.name))
+    except FlowError as exc:
+        raise HTTPException(status_code=flow_status(exc), detail=str(exc)) from exc
+    return WorkflowOut.model_validate(renamed)
+
+
+@router.delete("/workflows/{workflow}", response_model=Ok)
+async def delete_workflow(workflow: str) -> Ok:
+    """Delete a workflow and every flow in it."""
+    try:
+        await flows.delete_workflow(named(workflow))
+    except FlowError as exc:
+        raise HTTPException(status_code=flow_status(exc), detail=str(exc)) from exc
+    return Ok()
+
+
+@router.get("/workflows/{workflow}/flows", response_model=list[FlowFileOut])
+async def list_flows(workflow: str):
+    """The `.flow` files in one workflow, `main.flow` first."""
+    try:
+        found = await flows.list(named(workflow))
+    except FlowError as exc:
+        raise HTTPException(status_code=flow_status(exc), detail=str(exc)) from exc
+    return [FlowFileOut.model_validate(one) for one in found]
+
+
+@router.get("/workflows/{workflow}/flows/{name}", response_model=FlowOut)
+async def read_flow(workflow: str, name: str) -> FlowOut:
+    """One flow, as it is on disk."""
+    try:
+        graph = await flows.read(
+            named(workflow), named(name, flow=True, workflow=workflow)
+        )
+    except FlowError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return FlowOut(name=name, is_main=name == MAIN, graph=graph)
+
+
+@router.put("/workflows/{workflow}/flows/{name}", response_model=FlowFileOut)
+async def write_flow(workflow: str, name: str, body: FlowGraphIn) -> FlowFileOut:
+    """Write a flow, creating the file if it is not there yet.
+
+    A PUT rather than a POST because the name is the identity: saving the same
+    canvas twice writes the same file, and there is nothing to create twice.
+    """
+    try:
+        written = await flows.write(
+            named(workflow),
+            named(name, flow=True, workflow=workflow),
+            body.model_dump(),
+        )
+    except FlowError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return FlowFileOut.model_validate(written)
+
+
+@router.post("/workflows/{workflow}/flows/{name}/rename", response_model=FlowFileOut)
+async def rename_flow(workflow: str, name: str, body: NameIn) -> FlowFileOut:
+    """Rename a flow, repointing the Agent widgets that call it."""
+    try:
+        renamed = await flows.rename(
+            named(workflow),
+            named(name, flow=True, workflow=workflow),
+            named(body.name, flow=True, workflow=workflow),
+        )
+    except FlowError as exc:
+        raise HTTPException(status_code=flow_status(exc), detail=str(exc)) from exc
+    return FlowFileOut.model_validate(renamed)
+
+
+@router.delete("/workflows/{workflow}/flows/{name}", response_model=Ok)
+async def delete_flow(workflow: str, name: str) -> Ok:
+    """Delete a flow. `main.flow` is refused — it is where a run starts."""
+    try:
+        await flows.delete(named(workflow), named(name, flow=True, workflow=workflow))
+    except FlowError as exc:
+        raise HTTPException(status_code=flow_status(exc), detail=str(exc)) from exc
+    return Ok()
+
+
 @router.get("/chat/defaults", response_model=ChatDefaultsOut)
 async def chat_defaults() -> ChatDefaultsOut:
     """What the chat pane opens with: a system message, and what will answer.
@@ -408,13 +539,61 @@ async def chat_defaults() -> ChatDefaultsOut:
 async def chat(
     body: ChatRequest, session: AsyncSession = Depends(get_session)
 ) -> ChatReplyOut:
-    """Answer a question from the passages in the chosen sources.
+    """Answer a question by running a flow, or from sources named directly.
 
-    Every source has to share an embedding model: the question is embedded
-    once, and a vector can only be compared against passages that were put in
+    A run starts at the named workflow's `main.flow` — the widgets on that
+    canvas are compiled to a LangGraph graph and executed, so what answers is
+    what the user drew. The `source_ids` path is the way in before any
+    workflow has been built.
+
+    Every source in one question has to share an embedding model: the question
+    is embedded once, and a vector can only be compared against passages put in
     the same space. That is the same rule `/sources/merge` enforces, for the
-    same reason.
+    same reason — the flow path checks it inside the graph, where which sources
+    are in play is only known once the branches have run.
     """
+    history = [(turn.role, turn.content) for turn in body.history]
+
+    if body.use_flow:
+        if not body.workflow:
+            raise HTTPException(
+                status_code=400, detail="name the workflow to run, or give source_ids"
+            )
+        name = named(body.flow or MAIN, flow=True, workflow=named(body.workflow))
+        try:
+            workflow = await Workflow.load(body.workflow, name)
+            text, citations = await workflow.answer(body.message, history)
+        except WorkflowError as exc:
+            # The flow is the user's own and the reason names its widgets, so
+            # it is worth saying rather than collapsing into a 500. A missing
+            # workflow or flow is a 404; anything else is a 409 — the thing is
+            # there but cannot run as drawn.
+            raise HTTPException(
+                status_code=flow_status(FlowError(str(exc))), detail=str(exc)
+            ) from exc
+        except ChatCreditsError as exc:
+            raise HTTPException(status_code=402, detail=str(exc)) from exc
+        except Exception as exc:
+            logger.warning("flow run failed", exc_info=True)
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"could not get an answer from {settings.chat_model}: "
+                    f"{type(exc).__name__}"
+                ),
+            ) from exc
+
+        return ChatReplyOut(
+            answer=text,
+            citations=[ChatCitationOut.model_validate(one) for one in citations],
+            model=settings.chat_model,
+        )
+
+    if not body.source_ids:
+        raise HTTPException(
+            status_code=400, detail="give at least one source_id, or run a flow"
+        )
+
     result = await session.execute(sql("sources_by_ids"), {"ids": body.source_ids})
     picked = result.mappings().all()
 
@@ -438,11 +617,11 @@ async def chat(
     )
 
     try:
-        answer = await conversation.reply(
-            body.message, [(turn.role, turn.content) for turn in body.history]
-        )
+        answer = await conversation.reply(body.message, history)
     except HTTPException:
         raise
+    except ChatCreditsError as exc:
+        raise HTTPException(status_code=402, detail=str(exc)) from exc
     except Exception as exc:
         logger.warning("chat completion failed", exc_info=True)
         raise HTTPException(

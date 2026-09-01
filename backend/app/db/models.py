@@ -11,13 +11,13 @@ from datetime import datetime
 from enum import StrEnum
 
 from sqlalchemy import (
+    REAL,
     BigInteger,
     DateTime,
     Enum,
     ForeignKey,
     Index,
     Integer,
-    REAL,
     String,
     Text,
     UniqueConstraint,
@@ -263,3 +263,4 @@ class DownloadJob(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (Index("ix_download_jobs_model_id", "model_id"),)
+

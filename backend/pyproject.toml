@@ -26,6 +26,10 @@ dependencies = [
     # onnxruntime) is pulled in even though chunking only ever asks pdfminer
     # for the text a PDF already carries.
     "unstructured[pdf]>=0.27.1",
+    # Compiles a saved workflow's widgets into a graph and runs it; see
+    # app/rag/workflow.py. Pulls langchain-core, which is used only for the
+    # runnable protocol underneath StateGraph — no LangChain model wrappers.
+    "langgraph>=1.2",
 ]
 
 [project.optional-dependencies]

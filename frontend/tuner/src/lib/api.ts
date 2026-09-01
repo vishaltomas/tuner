@@ -5,7 +5,11 @@ import type {
   DownloadJob,
   EmbeddingModel,
   LocalModel,
+  Flow,
+  FlowFile,
+  FlowGraph,
   Source,
+  Workflow,
 } from './types'
 
 const BASE = '/api'
@@ -227,6 +231,13 @@ export async function reembedSource(sourceId: string): Promise<Source | null> {
 
 export interface ChatPayload {
   message: string
+  /**
+   * Run a flow rather than the sources named here. The backend starts at
+   * `main.flow` unless `flow` names another file.
+   */
+  useFlow: boolean
+  /** Which workflow to run. Its `main.flow` is the entry point. */
+  workflow?: string | null
   sourceIds: string[]
   system: string
   history: ChatTurn[]
@@ -254,8 +265,13 @@ export async function sendChat(payload: ChatPayload): Promise<ChatResult> {
       headers: { 'Content-Type': 'application/json' },
       signal: AbortSignal.timeout(180_000),
       body: JSON.stringify({
+        // A flow runs on the server: the backend compiles it to a LangGraph
+        // graph and executes the widgets, so what answers is the canvas itself
+        // rather than this app's reading of it.
         message: payload.message,
-        source_ids: payload.sourceIds,
+        use_flow: payload.useFlow,
+        workflow: payload.workflow ?? null,
+        source_ids: payload.useFlow ? [] : payload.sourceIds,
         system: payload.system,
         top_k: payload.topK,
         // Only the transcript, and only what the backend accepts: markers and
@@ -292,4 +308,107 @@ async function errorDetail(response: Response): Promise<string> {
     // Not JSON, or an empty body — the status is all there is.
   }
   return `The backend refused the request (${response.status}).`
+}
+
+const isOk = (data: unknown): data is { ok: true } =>
+  typeof data === 'object' && data !== null && (data as { ok?: unknown }).ok === true
+
+const isFlowFile = (data: unknown): data is FlowFile =>
+  typeof data === 'object' && data !== null && typeof (data as FlowFile).name === 'string'
+
+const isFlowFileList = (data: unknown): data is FlowFile[] =>
+  Array.isArray(data) && data.every(isFlowFile)
+
+const isFlow = (data: unknown): data is Flow =>
+  typeof data === 'object' &&
+  data !== null &&
+  typeof (data as Flow).name === 'string' &&
+  typeof (data as Flow).graph === 'object' &&
+  Array.isArray((data as Flow).graph?.nodes)
+
+
+
+
+
+const isWorkflow = (data: unknown): data is Workflow =>
+  typeof data === 'object' && data !== null && typeof (data as Workflow).name === 'string'
+
+const isWorkflowList = (data: unknown): data is Workflow[] =>
+  Array.isArray(data) && data.every(isWorkflow)
+
+/** A path segment, escaped. Workflow names may contain spaces. */
+const seg = (value: string) => encodeURIComponent(value)
+
+// ---- workflows ----------------------------------------------------------
+
+export async function fetchWorkflows(): Promise<Workflow[] | null> {
+  return request('/workflows', { method: 'GET' }, isWorkflowList)
+}
+
+export async function createWorkflow(name: string): Promise<Workflow | null> {
+  return request(
+    '/workflows',
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) },
+    isWorkflow,
+  )
+}
+
+export async function renameWorkflow(name: string, next: string): Promise<Workflow | null> {
+  return request(
+    `/workflows/${seg(name)}/rename`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: next }) },
+    isWorkflow,
+  )
+}
+
+export async function deleteWorkflow(name: string): Promise<boolean> {
+  return (await request(`/workflows/${seg(name)}`, { method: 'DELETE' }, isOk)) !== null
+}
+
+// ---- flows inside a workflow --------------------------------------------
+
+export async function fetchFlows(workflow: string): Promise<FlowFile[] | null> {
+  return request(`/workflows/${seg(workflow)}/flows`, { method: 'GET' }, isFlowFileList)
+}
+
+export async function fetchFlow(workflow: string, name: string): Promise<Flow | null> {
+  return request(`/workflows/${seg(workflow)}/flows/${seg(name)}`, { method: 'GET' }, isFlow)
+}
+
+/**
+ * Write a flow, creating the file if it is not there.
+ *
+ * A PUT because the filename is the identity: saving the same canvas twice
+ * writes the same file, and there is nothing to create twice.
+ */
+export async function saveFlow(
+  workflow: string,
+  name: string,
+  graph: FlowGraph,
+): Promise<FlowFile | null> {
+  return request(
+    `/workflows/${seg(workflow)}/flows/${seg(name)}`,
+    { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(graph) },
+    isFlowFile,
+  )
+}
+
+/** Rename a flow. The backend repoints the Agent widgets that call it. */
+export async function renameFlow(
+  workflow: string,
+  name: string,
+  next: string,
+): Promise<FlowFile | null> {
+  return request(
+    `/workflows/${seg(workflow)}/flows/${seg(name)}/rename`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: next }) },
+    isFlowFile,
+  )
+}
+
+export async function deleteFlow(workflow: string, name: string): Promise<boolean> {
+  return (
+    (await request(`/workflows/${seg(workflow)}/flows/${seg(name)}`, { method: 'DELETE' }, isOk)) !==
+    null
+  )
 }
