@@ -8,6 +8,7 @@ import type {
   Flow,
   FlowFile,
   FlowGraph,
+  Deployment,
   Source,
   Workflow,
 } from './types'
@@ -51,7 +52,9 @@ async function request<T>(
   try {
     const response = await fetch(`${BASE}${path}`, {
       ...init,
-      signal: AbortSignal.timeout(20_000),
+      // A caller may want longer: packaging a workflow copies a model and can
+      // run a Docker build. Twenty seconds is only the default.
+      signal: init.signal ?? AbortSignal.timeout(20_000),
     })
     if (!response.ok) {
       setStatus(response.status >= 500 ? 'offline' : 'online')
@@ -410,5 +413,25 @@ export async function deleteFlow(workflow: string, name: string): Promise<boolea
   return (
     (await request(`/workflows/${seg(workflow)}/flows/${seg(name)}`, { method: 'DELETE' }, isOk)) !==
     null
+  )
+}
+
+const isDeployment = (data: unknown): data is Deployment =>
+  typeof data === 'object' && data !== null && typeof (data as Deployment).image === 'string'
+
+/**
+ * Package a workflow as a Docker build context, and build it if it can.
+ *
+ * Slow: it copies the embedding model and, when a daemon is reachable,
+ * installs torch inside the image. The timeout is generous for that reason.
+ */
+export async function deployWorkflow(
+  workflow: string,
+  build: boolean,
+): Promise<Deployment | null> {
+  return request(
+    `/workflows/${seg(workflow)}/deploy?build=${build}`,
+    { method: 'POST', signal: AbortSignal.timeout(1_800_000) },
+    isDeployment,
   )
 }

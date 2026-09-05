@@ -246,3 +246,21 @@ export interface Flow {
   isMain: boolean
   graph: FlowGraph
 }
+
+/** What an export produced, and whether it became a Docker image. */
+export interface Deployment {
+  workflow: string
+  /** Where the build context was written on the server. */
+  directory: string
+  image: string
+  flows: number
+  passages: number
+  sizeMb: number
+  model?: string | null
+  /** False when the image will download the embedding model on first start. */
+  modelIncluded: boolean
+  /** Whether `docker build` ran, and what it said if it did not. */
+  built: boolean
+  buildNote: string
+  exportedAt: string
+}

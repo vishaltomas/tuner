@@ -9,7 +9,7 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "test:unit": "node --experimental-strip-types --no-warnings --import ./tests/register.mjs tests/workflow-resolve.mjs && node --experimental-strip-types --no-warnings --import ./tests/register.mjs tests/connection-rules.mjs",
-    "test:ui": "node tests/workflow-dnd.mjs && node tests/connect-feedback.mjs && node tests/router.mjs && node tests/flow-toolbar.mjs && node tests/chat-workflow.mjs",
+    "test:ui": "node tests/workflow-dnd.mjs && node tests/connect-feedback.mjs && node tests/router.mjs && node tests/flow-toolbar.mjs && node tests/deploy.mjs && node tests/chat-workflow.mjs && node tests/edge-delete.mjs",
     "test": "npm run test:unit && npm run test:ui"
   },
   "dependencies": {

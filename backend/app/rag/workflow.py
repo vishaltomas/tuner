@@ -26,8 +26,6 @@ from uuid import UUID
 from langgraph.graph import END, START, StateGraph
 
 from app.config import settings
-from app.db.session import session_factory
-from app.db.sql import sql
 from app.services import hf_api
 from app.services.flows import MAIN, FlowError, Flows, flows
 
@@ -550,18 +548,20 @@ class Workflow:
         space its passages were put in — so the sources must agree with each
         other and with whatever the Embed widget used.
         """
-        params = {"ids": list(source_ids)}
-        async with session_factory() as session:
-            result = await session.execute(sql("sources_by_ids"), params)
-            rows = result.mappings().all()
+        # Through the passage store rather than the database directly: an
+        # exported image has no database, and its vectors carry the model that
+        # made them. See `Passages`.
+        from app.rag.native import Passages
 
-        if set(source_ids) - {row["id"] for row in rows}:
+        known = await Passages().models_for(source_ids)
+
+        if set(source_ids) - set(known):
             raise WorkflowError(
                 f"{self.name} points at a source that no longer exists; "
                 f"open it and pick another."
             )
 
-        models = {row["model"] for row in rows}
+        models = set(known.values())
         if len(models) > 1:
             raise WorkflowError(
                 f"A Source widget in {self.name} mixes embedding models "

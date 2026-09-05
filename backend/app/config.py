@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     model_dir: str = "models"
     # Where the `.flow` files live. `main.flow` in here is where a run starts.
     flow_dir: str = "flows"
+    # Where a deployed image writes its exported workflows.
+    export_dir: str = "exports"
+    # A SQLite file holding the passages a deployed image was built with.
+    # Empty here, where Postgres is the store; set inside an exported image,
+    # which carries its vectors and has no database to reach.
+    vector_db: str = ""
 
     # Chat. Retrieval runs locally against the vectors in Postgres; the answer
     # is written by a served model on the Hugging Face Inference API, reached

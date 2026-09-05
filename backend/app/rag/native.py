@@ -6,7 +6,9 @@ decides which of these run and in what order is `workflow`.
 """
 
 import asyncio
+import json
 import logging
+import sqlite3
 import threading
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
@@ -28,6 +30,7 @@ from unstructured.nlp.tokenize import sent_tokenize
 from unstructured.partition.pdf import partition_pdf
 from unstructured.partition.text import partition_text
 
+from app.config import settings
 from app.db.models import DocumentKind, DocumentStatus
 from app.db.session import session_factory
 from app.db.sql import sql
@@ -432,20 +435,15 @@ class NativeRAG:
         have checked those sources share this model: nothing here can tell a
         vector from the wrong space by looking at it.
 
-        The comparison happens here rather than in Postgres: without pgvector
+        The comparison happens here rather than in the store: without pgvector
         there is no cosine operator to order by and no index to serve it, so
         the candidates come back and are scored in process. That is a scan —
         fine for a corpus that fits in memory, and the thing to replace with a
-        `vector` column when the extension is available.
+        `vector` column when the extension is available. It is also what lets
+        a deployed image search a SQLite file with the same code; see
+        `Passages`.
         """
-        statement, params = (
-            ("chunks_for_sources", {"source_ids": list(source_ids)})
-            if source_ids is not None
-            else ("chunks_for_model", {"model": self.model})
-        )
-
-        async with session_factory() as session:
-            rows = (await session.execute(sql(statement), params)).mappings().all()
+        rows = await Passages().candidates(self.model, source_ids)
 
         if not rows:
             return []
@@ -565,6 +563,97 @@ class NativeRAG:
                 },
             )
             await session.commit()
+
+
+class Passages:
+    """Where retrieval reads its candidate passages from.
+
+    Two stores answer the same question. Postgres is the one this app writes
+    to as documents are embedded; a SQLite file is what an exported image
+    carries, so a deployment can run with no database to reach. Which one is
+    used is a matter of configuration, not of code — everything above this
+    reads the same rows either way.
+    """
+
+    def __init__(self, path: str | None = None):
+        #: The SQLite file to read, or nothing to use Postgres.
+        self.path = path if path is not None else settings.vector_db
+
+    async def candidates(
+        self, model: str, source_ids: Sequence[UUID] | None
+    ) -> list[dict]:
+        """Every embedded passage that could answer, before any scoring."""
+        if self.path:
+            return await asyncio.to_thread(self._sqlite, source_ids)
+
+        statement, params = (
+            ("chunks_for_sources", {"source_ids": list(source_ids)})
+            if source_ids is not None
+            else ("chunks_for_model", {"model": model})
+        )
+        async with session_factory() as session:
+            rows = (await session.execute(sql(statement), params)).mappings().all()
+        return [dict(row) for row in rows]
+
+    async def models_for(self, source_ids: Sequence[UUID]) -> dict[UUID, str]:
+        """Which model embedded each source, for the ones this store holds.
+
+        A caller compares this against what it expected and reports a source
+        that has gone or a set that disagrees; here it is only a lookup. In an
+        exported image the answer comes from the file the vectors are in,
+        because there is no database to ask.
+        """
+        if self.path:
+            return await asyncio.to_thread(self._sqlite_models, source_ids)
+
+        async with session_factory() as session:
+            result = await session.execute(
+                sql("sources_by_ids"), {"ids": list(source_ids)}
+            )
+            return {row["id"]: row["model"] for row in result.mappings()}
+
+    def _sqlite_models(self, source_ids: Sequence[UUID]) -> dict[UUID, str]:
+        with sqlite3.connect(f"file:{self.path}?mode=ro", uri=True) as database:
+            model = database.execute(
+                "SELECT value FROM meta WHERE key = 'model'"
+            ).fetchone()
+            rows = database.execute("SELECT DISTINCT source_id FROM passages")
+            held = {row[0] for row in rows}
+        # Every passage in the file was embedded by the one model the export
+        # recorded — an image carries a single workflow, and a workflow cannot
+        # mix embedding spaces.
+        if not model:
+            return {}
+        return {one: model[0] for one in source_ids if str(one) in held}
+
+    def _sqlite(self, source_ids: Sequence[UUID] | None) -> list[dict]:
+        """The same rows, out of the file an exported image was built with.
+
+        Ids and vectors are stored as text: SQLite has neither a UUID type nor
+        an array one, and the alternative — a row per dimension, or a blob to
+        unpack by hand — would be less legible for no gain at this size.
+        """
+        wanted = {str(one) for one in source_ids} if source_ids is not None else None
+
+        with sqlite3.connect(self.path) as database:
+            database.row_factory = sqlite3.Row
+            rows = database.execute("SELECT * FROM passages").fetchall()
+
+        return [
+            {
+                "id": UUID(row["id"]),
+                "document_id": UUID(row["document_id"]),
+                "source_id": UUID(row["source_id"]),
+                "ordinal": row["ordinal"],
+                "text": row["text"],
+                "tokens": row["tokens"],
+                "pages": json.loads(row["pages"]) if row["pages"] else None,
+                "embedding": json.loads(row["embedding"]),
+                "document_name": row["document_name"],
+            }
+            for row in rows
+            if wanted is None or row["source_id"] in wanted
+        ]
 
 
 class Reranker:

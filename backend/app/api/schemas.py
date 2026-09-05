@@ -202,6 +202,22 @@ class FlowOut(CamelModel):
     graph: dict
 
 
+class DeploymentOut(CamelModel):
+    """What an export produced, and whether it became an image."""
+
+    workflow: str
+    directory: str
+    image: str
+    flows: int
+    passages: int
+    size_mb: float
+    model: str | None = None
+    model_included: bool
+    built: bool
+    build_note: str
+    exported_at: datetime
+
+
 class ChatTurn(BaseModel):
     """One earlier turn, replayed by the browser.
 

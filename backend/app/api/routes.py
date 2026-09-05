@@ -12,6 +12,7 @@ from app.api.schemas import (
     ChatDefaultsOut,
     ChatReplyOut,
     ChatRequest,
+    DeploymentOut,
     DownloadJobOut,
     DownloadRequest,
     EmbeddingModelDetailOut,
@@ -32,6 +33,7 @@ from app.db.sql import sql
 from app.rag.chat import DEFAULT_SYSTEM, Chat
 from app.rag.workflow import Workflow, WorkflowError
 from app.services import downloads, hf_api, storage
+from app.services.deploy import Deploy
 from app.services.flows import MAIN, FlowError, flows
 from app.services.hf_api import ChatCreditsError
 
@@ -454,6 +456,23 @@ async def delete_workflow(workflow: str) -> Ok:
     except FlowError as exc:
         raise HTTPException(status_code=flow_status(exc), detail=str(exc)) from exc
     return Ok()
+
+
+@router.post("/workflows/{workflow}/deploy", response_model=DeploymentOut)
+async def deploy_workflow(workflow: str, build: bool = True) -> DeploymentOut:
+    """Package a workflow as a Docker build context, and build it if it can.
+
+    The context is always written; the build only runs when a Docker daemon
+    answers. `build=false` skips it deliberately — useful when the image is
+    meant to be built somewhere other than this machine.
+
+    Slow: it copies the embedding model and, if it builds, installs torch.
+    """
+    try:
+        made = await Deploy(named(workflow)).export(build=build)
+    except FlowError as exc:
+        raise HTTPException(status_code=flow_status(exc), detail=str(exc)) from exc
+    return DeploymentOut.model_validate(made)
 
 
 @router.get("/workflows/{workflow}/flows", response_model=list[FlowFileOut])

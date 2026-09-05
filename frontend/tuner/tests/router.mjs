@@ -11,7 +11,6 @@ await page.goto('http://localhost:5173/#/workflow', { waitUntil: 'networkidle' }
 await page.waitForTimeout(1500)
 
 const body = () => page.locator('body').innerText()
-const canvas = page.locator('.react-flow__pane')
 
 console.log('--- the rail offers a Router ---')
 check('Router in the rail', (await page.locator('[aria-label="Router"]').count()) === 1)

@@ -19,12 +19,21 @@ import DeleteOutlinedIcon from '@mui/icons-material/DeleteOutlined'
 import DriveFileRenameOutlineIcon from '@mui/icons-material/DriveFileRenameOutline'
 import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined'
 import ArrowBackIcon from '@mui/icons-material/ArrowBack'
+import RocketLaunchOutlinedIcon from '@mui/icons-material/RocketLaunchOutlined'
 import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined'
 import { EMPTY_GRAPH, MAIN, useFlows, useWorkflows } from '../../hooks/useFlows'
 import * as api from '../../lib/api'
 import { navigate } from '../../lib/route'
-import type { FlowGraph, LocalModel, Source, WidgetConfig, WidgetKind } from '../../lib/types'
+import type {
+  Deployment,
+  FlowGraph,
+  LocalModel,
+  Source,
+  WidgetConfig,
+  WidgetKind,
+} from '../../lib/types'
 import { uid } from '../../lib/utils'
+import { DeployDialog } from './DeployDialog'
 import { ConfirmDialog, NameDialog } from './NameDialog'
 import { FlowTree } from './FlowTree'
 import { WidgetInspector } from './WidgetInspector'
@@ -87,6 +96,12 @@ export function WorkflowPage({ sources }: { sources: Source[] }) {
     null,
   )
   const [confirming, setConfirming] = useState(false)
+  // Packaging the workflow as a Docker image. Held here rather than in the
+  // dialog because the export outlives a dialog the user might close.
+  const [deploying, setDeploying] = useState(false)
+  const [deployBusy, setDeployBusy] = useState(false)
+  const [deployment, setDeployment] = useState<Deployment | null>(null)
+  const [deployError, setDeployError] = useState<string | null>(null)
   // Models on disk, offered to the Embed and Reranker widgets. Fetched once:
   // downloading one is a deliberate act elsewhere in the app, not something
   // that happens while a flow is being wired.
@@ -325,6 +340,36 @@ export function WorkflowPage({ sources }: { sources: Source[] }) {
     }
   }
 
+  async function deploy(build: boolean) {
+    if (!workflow) return
+    // Saved first: the export reads the flows off disk, so unsaved edits
+    // would be packaged as they were rather than as they are on screen.
+    setDeployBusy(true)
+    setDeployError(null)
+    try {
+      if (dirty) {
+        await save(open, graph)
+        setDirty(false)
+      }
+      const made = await api.deployWorkflow(workflow, build)
+      if (!made) throw new Error('deploy failed')
+      setDeployment(made)
+    } catch {
+      setDeployError(
+        'Could not package this workflow. Check the backend log — a source it ' +
+          'retrieves from may have been deleted.',
+      )
+    } finally {
+      setDeployBusy(false)
+    }
+  }
+
+  function closeDeploy() {
+    setDeploying(false)
+    setDeployment(null)
+    setDeployError(null)
+  }
+
   async function handleDelete(name: string) {
     await remove(name)
     if (name === open) await load(MAIN)
@@ -446,6 +491,24 @@ export function WorkflowPage({ sources }: { sources: Source[] }) {
         >
           Save
         </Button>
+        <Tooltip
+          title={
+            problems.length > 0
+              ? 'Finish the flow first — a deployed image runs main.flow'
+              : 'Package this workflow as a Docker image'
+          }
+        >
+          <Box>
+            <Button
+              size="small"
+              startIcon={<RocketLaunchOutlinedIcon fontSize="small" />}
+              onClick={() => setDeploying(true)}
+              disabled={busy || (isMain && problems.length > 0)}
+            >
+              Deploy
+            </Button>
+          </Box>
+        </Tooltip>
 
         <Box className="ml-auto flex items-center gap-1.5">
           {calls.length > 0 && (
@@ -597,6 +660,15 @@ export function WorkflowPage({ sources }: { sources: Source[] }) {
         validate={checkFlowName}
         onSubmit={(name) => void createFlow(name)}
         onClose={() => setAsking(null)}
+      />
+      <DeployDialog
+        open={deploying}
+        workflow={workflow ?? ''}
+        busy={deployBusy}
+        result={deployment}
+        error={deployError}
+        onDeploy={(build) => void deploy(build)}
+        onClose={closeDeploy}
       />
       <ConfirmDialog
         open={confirming}

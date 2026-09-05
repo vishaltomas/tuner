@@ -34,3 +34,7 @@ backend/models/
 
 # Screenshots the browser suites take as they run
 frontend/tuner/tests/*.png
+frontend/tuner/*.png
+
+# Docker build contexts written by the deploy export
+backend/exports/

@@ -19,9 +19,11 @@ import { Box, Typography } from '@mui/material'
 import type { FlowGraph, Source, WidgetConfig, WidgetKind } from '../../lib/types'
 import { totalChunks, uid } from '../../lib/utils'
 import { WidgetNode, type WidgetNodeData } from './WidgetNode'
+import { WireEdge, type WireEdgeData } from './WireEdge'
 import { DRAG_TYPE, WIDGETS, connectionIssue, resolve } from './widgets'
 
 const NODE_TYPES = { widget: WidgetNode }
+const EDGE_TYPES = { wire: WireEdge }
 
 interface WorkflowCanvasProps {
   graph: FlowGraph
@@ -73,6 +75,17 @@ export function WorkflowCanvas({
     Record<string, { width: number; height: number }>
   >({})
 
+  // Which wire the pointer is over. A wire shows its remove button only then,
+  // so the canvas is not littered with controls for something not being
+  // touched.
+  const [hovered, setHovered] = useState<string | null>(null)
+
+  // Which wire is selected, held here rather than left to React Flow. This
+  // canvas is controlled: every render hands React Flow a fresh `edges` array
+  // built from `graph`, which would overwrite a selection it was keeping
+  // internally. The nodes are selected the same way, for the same reason.
+  const [selectedEdge, setSelectedEdge] = useState<string | null>(null)
+
   // Only the id is taken from the connection store, so a pointer move during
   // a drag does not re-render the canvas for coordinates it never reads.
   const connectingFrom = useConnection((connection) =>
@@ -115,14 +128,26 @@ export function WorkflowCanvas({
     [connectingFrom, connectingHandle, graph, measured, reachable, selectedId, sourceNames],
   )
 
-  const edges: Edge[] = useMemo(
+  const removeEdge = useCallback(
+    (id: string) => {
+      onGraphChange({ ...graph, edges: graph.edges.filter((edge) => edge.id !== id) })
+      setHovered(null)
+      setSelectedEdge(null)
+    },
+    [graph, onGraphChange],
+  )
+
+  const edges: Edge<WireEdgeData>[] = useMemo(
     () =>
       graph.edges.map((edge) => ({
         ...edge,
+        type: 'wire',
         sourceHandle: edge.sourceHandle ?? undefined,
         animated: reachable.has(edge.target),
+        selected: edge.id === selectedEdge,
+        data: { active: hovered === edge.id, onDelete: removeEdge },
       })),
-    [graph.edges, reachable],
+    [graph.edges, hovered, reachable, removeEdge, selectedEdge],
   )
 
   const onNodesChange = useCallback(
@@ -173,8 +198,13 @@ export function WorkflowCanvas({
   )
 
   const onEdgesChange = useCallback(
-    (changes: EdgeChange<Edge>[]) => {
+    (changes: EdgeChange<Edge<WireEdgeData>>[]) => {
       const kept = new Set(applyEdgeChanges(changes, edges).map((one) => one.id))
+      // Selecting a wire is not an edit. Reporting one as a graph change both
+      // lit the Save button on an untouched flow and, because the rebuilt
+      // `edges` carry no selection, threw the selection away again before
+      // Delete could act on it.
+      if (kept.size === graph.edges.length) return
       onGraphChange({ ...graph, edges: graph.edges.filter((edge) => kept.has(edge.id)) })
     },
     [edges, graph, onGraphChange],
@@ -297,6 +327,13 @@ export function WorkflowCanvas({
         nodes={nodes}
         edges={edges}
         nodeTypes={NODE_TYPES}
+        edgeTypes={EDGE_TYPES}
+        // React Flow binds only Backspace by default, which is the key most
+        // people do not reach for. Both work; the button on the wire is what
+        // makes it discoverable at all.
+        deleteKeyCode={['Backspace', 'Delete']}
+        onEdgeMouseEnter={(_, edge) => setHovered(edge.id)}
+        onEdgeMouseLeave={() => setHovered(null)}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
@@ -312,8 +349,20 @@ export function WorkflowCanvas({
             connection.sourceHandle,
           ) === null
         }
-        onNodeClick={(_, node) => onSelect(node.id)}
-        onPaneClick={() => onSelect(null)}
+        // Selecting one thing deselects the other, so Delete has a single,
+        // obvious target rather than quietly taking a widget and a wire.
+        onEdgeClick={(_, edge) => {
+          setSelectedEdge(edge.id)
+          onSelect(null)
+        }}
+        onNodeClick={(_, node) => {
+          setSelectedEdge(null)
+          onSelect(node.id)
+        }}
+        onPaneClick={() => {
+          setSelectedEdge(null)
+          onSelect(null)
+        }}
         fitView
         // Without a ceiling, fitting a single node zooms it to ~2x, which
         // makes every node huge and trivial to drop on top of another.
