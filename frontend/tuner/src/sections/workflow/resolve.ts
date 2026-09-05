@@ -13,20 +13,24 @@ import { WIDGETS } from './widgets'
  * the user dropped and has not connected yet; treating it as active would mean
  * a half-built flow behaved as though it were finished.
  */
-export function resolve(graph: FlowGraph): {
+export function resolve(
+  graph: FlowGraph,
+  options: { isMain?: boolean } = {},
+): {
   problems: string[]
   reachable: Set<string>
-  /** Flows named by reachable Agent widgets, for the canvas to warn about. */
+  /** Flows named by reachable Agent widgets, for the explorer to mark. */
   calls: string[]
 } {
   const byId = new Map(graph.nodes.map((node) => [node.id, node]))
-  const answer = graph.nodes.find((node) => node.kind === 'answer')
+  const output = graph.nodes.find((node) => node.kind === 'output')
+  const input = graph.nodes.find((node) => node.kind === 'input')
 
   const reachable = new Set<string>()
-  if (answer) {
+  if (output) {
     // Breadth-first over incoming edges. The `seen` guard is what keeps a
     // cycle — which the canvas does not prevent — from looping forever.
-    const queue = [answer.id]
+    const queue = [output.id]
     while (queue.length > 0) {
       const id = queue.shift()!
       if (reachable.has(id)) continue
@@ -44,52 +48,95 @@ export function resolve(graph: FlowGraph): {
     .filter((name): name is string => Boolean(name))
 
   const problems: string[] = []
-  if (!answer) {
-    problems.push('Add an Answer widget — it is where the conversation happens.')
-    return { problems, reachable, calls }
+  const add = (text: string) => problems.push(text)
+
+  if (!input) add('Add an Input widget — a run has to start somewhere.')
+  if (!output) add('Add an Output widget — a run has to end somewhere.')
+  if (!input || !output) return { problems, reachable, calls }
+  if (!reachable.has(input.id)) {
+    add('Wire the Input widget through to the Output widget.')
   }
 
-  for (const kind of ['system', 'retrieval', 'answer'] as const) {
+  for (const kind of ['input', 'embed', 'reranker', 'system', 'output'] as const) {
     const found = live.filter((node) => node.kind === kind).length
     if (found > 1) {
-      problems.push(`This flow has ${found} ${WIDGETS[kind].label} widgets; it may have one.`)
+      add(`This flow has ${found} ${WIDGETS[kind].label} widgets; it may have one.`)
     }
   }
 
-  const feeds = live.filter((node) => node.kind === 'source' || node.kind === 'agent')
-  if (feeds.length === 0) {
-    problems.push('Wire a Source or an Agent widget through to the Answer widget.')
-  }
-
-  for (const node of feeds) {
-    if (node.kind === 'agent' && !node.config.flow) {
-      problems.push('An Agent widget names no flow to run.')
-      break
+  // `main.flow` is what Chat runs, so its two ends are the conversation.
+  if (options.isMain) {
+    for (const [node, what] of [
+      [input, 'Input'],
+      [output, 'Output'],
+    ] as const) {
+      if ((node.config.mode ?? 'chat') !== 'chat') {
+        add(`The ${what} widget in main.flow must be set to Chat.`)
+      }
     }
   }
 
-  const unsetFiles = feeds.filter(
-    (node) =>
-      node.kind === 'source' &&
-      (node.config.sourceType ?? 'files') === 'files' &&
-      !node.config.sourceId,
+  const retrieving = live.filter(
+    (node) => node.kind === 'source' && (node.config.sourceType ?? 'files') === 'files',
   )
-  if (unsetFiles.length > 0) {
-    problems.push(
-      `${unsetFiles.length} connected Source ${
-        unsetFiles.length === 1 ? 'widget has' : 'widgets have'
-      } no source picked.`,
+  const embed = live.find((node) => node.kind === 'embed')
+
+  if (retrieving.length > 0 && !embed) {
+    add('Wire an Embed widget in — it turns the question into a vector to search with.')
+  }
+
+  const reranker = live.find((node) => node.kind === 'reranker')
+  if (reranker && !reranker.config.model) add('The Reranker widget names no model.')
+
+  for (const router of live.filter((node) => node.kind === 'router')) {
+    const routes = router.config.routes ?? []
+    if (routes.length < 2) {
+      add('A Router needs at least two routes — with one there is nothing to decide.')
+      continue
+    }
+    if (routes.some((route) => !route.when.trim())) {
+      add('A route on a Router does not say when to take it.')
+    }
+    const wired = new Set(
+      graph.edges
+        .filter((edge) => edge.source === router.id && reachable.has(edge.target))
+        .map((edge) => edge.sourceHandle),
+    )
+    const loose = routes.filter((route) => !wired.has(route.id))
+    if (loose.length > 0) {
+      add(
+        `Route${loose.length > 1 ? 's' : ''} ${loose
+          .map((route) => route.label || route.id)
+          .join(', ')} on a Router ${loose.length > 1 ? 'lead' : 'leads'} nowhere.`,
+      )
+    }
+  }
+
+  if (live.some((node) => node.kind === 'agent' && !node.config.flow)) {
+    add('An Agent widget names no flow to run.')
+  }
+
+  const unsetSources = retrieving.filter((node) => (node.config.sourceIds ?? []).length === 0)
+  if (unsetSources.length > 0) {
+    add(
+      `${unsetSources.length} connected Source ${
+        unsetSources.length === 1 ? 'widget has' : 'widgets have'
+      } no sources picked.`,
     )
   }
+  if (
+    live.some(
+      (node) =>
+        node.kind === 'source' &&
+        node.config.sourceType === 'txt' &&
+        !(node.config.text ?? '').trim(),
+    )
+  ) {
+    add('A text Source widget is empty.')
+  }
 
-  const emptyText = feeds.filter(
-    (node) =>
-      node.kind === 'source' &&
-      node.config.sourceType === 'txt' &&
-      !(node.config.text ?? '').trim(),
-  )
-  if (emptyText.length > 0) {
-    problems.push('A text Source widget is empty.')
+  if (!live.some((node) => node.kind === 'source' || node.kind === 'agent')) {
+    add('Wire a Source or an Agent widget through to the Output widget.')
   }
 
   return { problems, reachable, calls }
@@ -110,6 +157,8 @@ export function connectionIssue(
   graph: FlowGraph,
   fromId: string,
   toId: string,
+  /** Which output the wire leaves from; only a Router has more than one. */
+  fromHandle?: string | null,
 ): string | null {
   if (fromId === toId) return 'A widget cannot connect to itself.'
 
@@ -117,14 +166,30 @@ export function connectionIssue(
   const to = graph.nodes.find((node) => node.id === toId)
   if (!from || !to) return 'That widget is no longer on the canvas.'
 
+  // A flow saved under an older widget vocabulary can hold a kind this build
+  // no longer knows. Refusing the wire says so; reading the registry blind
+  // would take the canvas down with a TypeError.
+  if (!WIDGETS[from.kind] || !WIDGETS[to.kind]) {
+    return 'This flow uses a widget this version does not know.'
+  }
+
   if (!WIDGETS[from.kind].outputs) {
     return `${WIDGETS[from.kind].label} has no output to wire from.`
   }
   if (!WIDGETS[to.kind].inputs) {
     return `${WIDGETS[to.kind].label} does not take an input — wire it onwards instead.`
   }
-  if (graph.edges.some((edge) => edge.source === fromId && edge.target === toId)) {
+  const sameOutput = graph.edges.filter(
+    (edge) => edge.source === fromId && (edge.sourceHandle ?? null) === (fromHandle ?? null),
+  )
+  if (sameOutput.some((edge) => edge.target === toId)) {
     return `Already wired to ${WIDGETS[to.kind].label}.`
+  }
+  // A route sends the run to one place. Two wires out of the same route would
+  // be a fan-out, which is the opposite of what a Router is for.
+  if (from.kind === 'router' && sameOutput.length > 0) {
+    const route = (from.config.routes ?? []).find((one) => one.id === fromHandle)
+    return `Route ${route?.label ?? ''} already leads somewhere.`.replace('  ', ' ')
   }
   // Following the target's own outputs back round to the source means the wire
   // would close a loop. `resolve` survives one, but a flow that feeds its own

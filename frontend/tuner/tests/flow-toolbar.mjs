@@ -13,8 +13,28 @@ const browser = await chromium.launch()
 const page = await browser.newPage({ viewport: { width: 1500, height: 900 } })
 page.on('pageerror', (e) => console.log('PAGEERROR', e))
 
-let answer = 'Test workflow'
-page.on('dialog', (d) => (d.type() === 'confirm' ? d.accept() : d.accept(answer)))
+// Naming and confirming happen in the app's own dialogs now, not the
+// browser's. Anything that reaches this handler is a regression: a browser
+// that has suppressed dialogs would silently do nothing.
+page.on('dialog', (d) => { console.log('  !! browser dialog used:', d.type()); d.dismiss() })
+
+/** Fill the open dialog and submit it. */
+async function answerDialog(label, value, button) {
+  const dialog = page.getByRole('dialog')
+  await dialog.getByLabel(label).fill(value)
+  await page.waitForTimeout(250)
+  await dialog.getByRole('button', { name: button, exact: true }).click()
+  await page.waitForTimeout(1800)
+}
+
+// A run that was interrupted leaves its workflow behind, and the create below
+// would then fail as a duplicate. Clearing first makes the suite repeatable
+// rather than dependent on the last run having finished.
+for (const stale of ['Test workflow', 'Test workflow renamed']) {
+  await page.request
+    .delete(`http://localhost:5173/api/workflows/${encodeURIComponent(stale)}`)
+    .catch(() => {})
+}
 
 await page.goto('http://localhost:5173/#/workflow', { waitUntil: 'networkidle' })
 await page.waitForTimeout(1600)
@@ -42,17 +62,18 @@ check('Save disabled when clean', await page.getByRole('button', { name: 'Save' 
 console.log('\n--- creating a workflow ---')
 const before = await workflowValue()
 await page.getByLabel('New workflow').click()
-await page.waitForTimeout(1800)
+await page.waitForTimeout(600)
+await answerDialog('Workflow name', 'Test workflow', 'Create')
 check('switched to the new workflow', await workflowValue() === 'Test workflow', await workflowValue())
 check('it starts on main.flow', await flowName.inputValue() === 'main.flow')
 check('its flow list shows only main.flow', (await body()).match(/main\.flow/g)?.length >= 1)
 
 console.log('\n--- a flow inside it ---')
-answer = 'helper.flow'
 await page.getByRole('button', { name: 'New flow', exact: true }).click()
-await page.waitForTimeout(1800)
+await page.waitForTimeout(600)
+await answerDialog('Flow name', 'helper.flow', 'Create')
 check('created the flow', await flowName.inputValue() === 'helper.flow', await flowName.inputValue())
-await page.locator('[aria-label="Answer"]').click()
+await page.locator('[aria-label="Reranker"]').click()
 await page.waitForTimeout(700)
 check('Save enabled after an edit', !(await page.getByRole('button', { name: 'Save' }).isDisabled()))
 await page.getByRole('button', { name: 'Save' }).click()
@@ -66,9 +87,9 @@ await page.waitForTimeout(1800)
 check('.flow appended', await flowName.inputValue() === 'renamed.flow', await flowName.inputValue())
 
 console.log('\n--- renaming the workflow ---')
-answer = 'Test workflow renamed'
 await page.getByLabel('Rename workflow').click()
-await page.waitForTimeout(1800)
+await page.waitForTimeout(600)
+await answerDialog('Workflow name', 'Test workflow renamed', 'Rename')
 check('workflow renamed', await workflowValue() === 'Test workflow renamed', await workflowValue())
 check('its flows came with it', (await body()).includes('renamed.flow'))
 
@@ -86,6 +107,8 @@ await page.waitForTimeout(400)
 await page.getByRole('option', { name: 'Test workflow renamed' }).click()
 await page.waitForTimeout(1500)
 await page.getByLabel('Delete workflow').click()
+await page.waitForTimeout(600)
+await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click()
 await page.waitForTimeout(1800)
 // Checked against the list rather than the page text: the success snackbar
 // names what was just deleted, so the string is still on screen.

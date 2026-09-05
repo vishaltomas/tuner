@@ -13,6 +13,7 @@ import asyncio
 import json
 import re
 import shutil
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,11 +27,157 @@ MAIN = "main.flow"
 # The workflow loose flows are moved into, and what a fresh install opens on.
 DEFAULT_WORKFLOW = "My workflow"
 
+# What a new workflow's `main.flow` starts as: the two ends of a run, wired
+# together. A blank canvas would be technically the same thing to build on,
+# but it would not say that a run enters at one widget and leaves at another.
+STARTER: dict = {
+    "nodes": [
+        {
+            "id": "input",
+            "kind": "input",
+            "position": {"x": 120, "y": 60},
+            "config": {"mode": "chat"},
+        },
+        {
+            "id": "output",
+            "kind": "output",
+            "position": {"x": 120, "y": 400},
+            "config": {"mode": "chat"},
+        },
+    ],
+    "edges": [{"id": "input-output", "source": "input", "target": "output"}],
+}
+
 # Names become paths, so they are matched against these rather than sanitised
 # — a rule about what a name *is* leaves no room for a `..` or a separator to
 # survive some cleaning step.
 FLOW_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]{0,63}\.flow$")
 WORKFLOW_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]{0,63}$")
+
+
+def upgrade(graph: dict) -> dict:
+    """Bring a flow written under an older widget vocabulary up to date.
+
+    Flows are files the user has already made, so a change to what widgets
+    exist cannot simply invalidate them. This maps the shapes that have been
+    written to disk onto the current ones, in memory — the file itself is only
+    rewritten when the user next saves it.
+
+    `answer` became `output`, a `retrieval` widget's budget moved onto the
+    Source widget it fed, a Source widget's single `sourceId` became a list,
+    and every flow gained an `input` widget for the run to start at.
+    """
+    nodes = graph.get("nodes") or []
+    edges = graph.get("edges") or []
+    kinds = {node.get("kind") for node in nodes}
+    # Only a flow that actually holds an old widget is rewritten. A current
+    # flow missing an Input widget is the user's own doing and is reported as
+    # a problem, not silently patched behind them.
+    if not nodes or not (kinds & {"answer", "retrieval"}):
+        return graph
+
+    # The old `retrieval` widget's budget belongs to whatever Source fed it.
+    budget = next(
+        (
+            int((node.get("config") or {}).get("topK") or 0)
+            for node in nodes
+            if node.get("kind") == "retrieval"
+        ),
+        0,
+    )
+    dropped = {node["id"] for node in nodes if node.get("kind") == "retrieval"}
+
+    kept: list[dict] = []
+    for node in nodes:
+        if node["id"] in dropped:
+            continue
+        node = {**node, "config": dict(node.get("config") or {})}
+        if node.get("kind") == "answer":
+            node["kind"] = "output"
+            node["config"].setdefault("mode", "chat")
+        if node.get("kind") == "source":
+            single = node["config"].pop("sourceId", None)
+            if single and not node["config"].get("sourceIds"):
+                node["config"]["sourceIds"] = [single]
+            if (node["config"].get("sourceType") or "files") == "files":
+                node["config"].setdefault("method", "similarity")
+                node["config"].setdefault("docs", budget or 6)
+        kept.append(node)
+
+    # A dropped widget's wires are rejoined around it, so a chain that ran
+    # source → retrieval → answer still runs source → output.
+    rewired: list[dict] = []
+    for edge in edges:
+        source, target = edge.get("source"), edge.get("target")
+        if source in dropped and target in dropped:
+            continue
+        if source in dropped:
+            for upstream in edges:
+                joins = upstream.get("target") == source
+                if joins and upstream["source"] not in dropped:
+                    rewired.append(
+                        {
+                            "id": f"{upstream['source']}-{target}",
+                            "source": upstream["source"],
+                            "target": target,
+                        }
+                    )
+            continue
+        if target in dropped:
+            continue
+        rewired.append(edge)
+
+    # The old model embedded the question implicitly; the new one draws that
+    # step. Inserted between the entry and the Source widgets that retrieve, so
+    # an upgraded flow runs as it did rather than reporting a missing widget.
+    retrieving = [
+        node
+        for node in kept
+        if node.get("kind") == "source"
+        and (node["config"].get("sourceType") or "files") == "files"
+    ]
+    if retrieving and not any(node.get("kind") == "embed" for node in kept):
+        anchor = retrieving[0]["position"]
+        kept.append(
+            {
+                "id": "embed",
+                "kind": "embed",
+                "position": {"x": anchor["x"], "y": anchor["y"] - 150},
+                "config": {},
+            }
+        )
+        for node in retrieving:
+            rewired = [
+                edge
+                for edge in rewired
+                if not (edge["target"] == node["id"] and edge["source"] != "embed")
+            ]
+            rewired.append(
+                {"id": f"embed-{node['id']}", "source": "embed", "target": node["id"]}
+            )
+
+    if not any(node.get("kind") == "input" for node in kept):
+        # Placed above whatever has no incoming wire, and joined to it, so the
+        # upgraded flow reads the way it would have been drawn.
+        entered = {edge["target"] for edge in rewired}
+        roots = [node for node in kept if node["id"] not in entered]
+        top = min((node["position"]["y"] for node in kept), default=60)
+        left = min((node["position"]["x"] for node in kept), default=120)
+        kept.insert(
+            0,
+            {
+                "id": "input",
+                "kind": "input",
+                "position": {"x": left, "y": top - 160},
+                "config": {"mode": "chat"},
+            },
+        )
+        rewired.extend(
+            {"id": f"input-{node['id']}", "source": "input", "target": node["id"]}
+            for node in roots
+        )
+
+    return {"nodes": kept, "edges": rewired}
 
 
 class FlowError(Exception):
@@ -137,7 +284,7 @@ class Flows:
         path.mkdir(parents=True)
         # A workflow with no entry point cannot answer anything, so it is
         # created with one rather than left in a state Chat has to explain.
-        self._write_sync(name, MAIN, {"nodes": [], "edges": []})
+        self._write_sync(name, MAIN, deepcopy(STARTER))
         return self._describe_workflow(path)
 
     async def create_workflow(self, name: str) -> WorkflowDir:
@@ -189,7 +336,7 @@ class Flows:
             raise FlowError(f"{name} does not hold a flow")
         graph.setdefault("nodes", [])
         graph.setdefault("edges", [])
-        return graph
+        return upgrade(graph)
 
     async def read(self, workflow: str, name: str) -> dict:
         return await asyncio.to_thread(self._read_sync, workflow, name)
@@ -314,7 +461,7 @@ class Flows:
         # can appear that way if its main.flow was deleted from disk.
         for workflow in existing:
             if not (self.directory / workflow.name / MAIN).is_file():
-                self._write_sync(workflow.name, MAIN, {"nodes": [], "edges": []})
+                self._write_sync(workflow.name, MAIN, deepcopy(STARTER))
 
     async def ensure(self) -> None:
         await asyncio.to_thread(self._ensure_sync)

@@ -117,7 +117,16 @@ class FlowNodeIn(BaseModel):
     """One widget on the canvas, as the browser draws it."""
 
     id: str = Field(min_length=1, max_length=64)
-    kind: Literal["source", "agent", "system", "retrieval", "answer"]
+    kind: Literal[
+        "input",
+        "source",
+        "embed",
+        "reranker",
+        "router",
+        "agent",
+        "system",
+        "output",
+    ]
     position: dict[str, float]
     # Per-kind settings. Left loose on purpose: the widget catalogue is still
     # growing, and `rag.workflow` is what decides what a config means. Only
@@ -128,9 +137,14 @@ class FlowNodeIn(BaseModel):
 class FlowEdgeIn(BaseModel):
     """One wire. Endpoints are node ids, checked against the nodes on save."""
 
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
     id: str = Field(min_length=1, max_length=64)
     source: str = Field(min_length=1, max_length=64)
     target: str = Field(min_length=1, max_length=64)
+    #: Which output of the source widget this wire leaves from. Only a Router
+    #: has more than one, and it is how a route is told from its siblings.
+    source_handle: str | None = Field(default=None, max_length=64)
 
 
 class FlowGraphIn(BaseModel):
@@ -243,8 +257,10 @@ class ChatCitationOut(CamelModel):
     source_id: UUID | None = None
     document_name: str
     pages: list[int]
-    # Cosine similarity to the question, in [-1, 1].
     score: float
+    #: What `score` measures: `similarity` from retrieval, `rerank` from a
+    #: cross-encoder, or `given` for a passage a widget supplied.
+    score_kind: str = "similarity"
     text: str
 
 

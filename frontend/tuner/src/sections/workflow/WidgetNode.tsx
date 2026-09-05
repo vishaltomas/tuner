@@ -22,6 +22,8 @@ export interface WidgetNodeData extends Record<string, unknown> {
    * Recomputed by the canvas for the duration of a connection drag.
    */
   connectIssue?: string
+  /** A Router's branches, each drawn with its own output handle. */
+  routes?: { id: string; label: string }[]
 }
 
 /**
@@ -114,8 +116,46 @@ export function WidgetNode({ data, selected }: NodeProps & { data: WidgetNodeDat
           )}
         </Box>
 
-        {spec.outputs && (
-          <Handle type="source" position={Position.Bottom} style={{ width: 9, height: 9 }} />
+        {/* A Router has one output per route, spread along the bottom and
+            named, so which branch a wire leaves from is visible on the canvas
+            rather than only in the inspector. Everything else has one. */}
+        {data.routes && data.routes.length > 0 ? (
+          <Box
+            className="flex items-stretch"
+            sx={{ borderTop: 1, borderColor: 'divider' }}
+          >
+            {data.routes.map((route, index) => (
+              <Box
+                key={route.id}
+                className="relative flex-1 px-1 pt-1 pb-2 text-center"
+                sx={{
+                  borderLeft: index === 0 ? 0 : 1,
+                  borderColor: 'divider',
+                  minWidth: 0,
+                }}
+              >
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  noWrap
+                  className="block"
+                  sx={{ fontSize: 10 }}
+                >
+                  {route.label || route.id}
+                </Typography>
+                <Handle
+                  id={route.id}
+                  type="source"
+                  position={Position.Bottom}
+                  style={{ width: 9, height: 9, left: '50%' }}
+                />
+              </Box>
+            ))}
+          </Box>
+        ) : (
+          spec.outputs && (
+            <Handle type="source" position={Position.Bottom} style={{ width: 9, height: 9 }} />
+          )
         )}
       </Box>
     </Tooltip>

@@ -1,81 +1,106 @@
 {
   "nodes": [
     {
-      "id": "f",
+      "id": "in",
+      "kind": "input",
+      "position": {
+        "x": 60.0,
+        "y": 40.0
+      },
+      "config": {
+        "mode": "chat"
+      }
+    },
+    {
+      "id": "emb",
+      "kind": "embed",
+      "position": {
+        "x": 60.0,
+        "y": 200.0
+      },
+      "config": {}
+    },
+    {
+      "id": "src",
       "kind": "source",
       "position": {
         "x": 60.0,
-        "y": 40.0
+        "y": 380.0
       },
       "config": {
         "sourceType": "files",
-        "sourceId": "48072172-9047-4e21-b96d-119955d05917"
+        "sourceIds": [
+          "48072172-9047-4e21-b96d-119955d05917"
+        ],
+        "method": "mmr",
+        "docs": 12
       }
     },
     {
-      "id": "r",
-      "kind": "retrieval",
+      "id": "rr",
+      "kind": "reranker",
       "position": {
         "x": 60.0,
-        "y": 240.0
+        "y": 560.0
       },
       "config": {
-        "topK": 4
-      }
-    },
-    {
-      "id": "ag",
-      "kind": "agent",
-      "position": {
-        "x": 340.0,
-        "y": 40.0
-      },
-      "config": {
-        "flow": "triage.flow",
-        "label": "Triage desk"
+        "model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        "keep": 4
       }
     },
     {
       "id": "sys",
       "kind": "system",
       "position": {
-        "x": 620.0,
-        "y": 40.0
+        "x": 380.0,
+        "y": 200.0
       },
       "config": {
-        "system": "Answer in two short sentences."
+        "system": "Answer in two short sentences with exact numbers."
       }
     },
     {
-      "id": "a",
-      "kind": "answer",
+      "id": "out",
+      "kind": "output",
       "position": {
-        "x": 340.0,
-        "y": 440.0
+        "x": 60.0,
+        "y": 740.0
       },
-      "config": {}
+      "config": {
+        "mode": "chat"
+      }
     }
   ],
   "edges": [
     {
-      "id": "fr",
-      "source": "f",
-      "target": "r"
+      "id": "inemb",
+      "source": "in",
+      "target": "emb"
     },
     {
-      "id": "ra",
-      "source": "r",
-      "target": "a"
+      "id": "embsrc",
+      "source": "emb",
+      "target": "src"
     },
     {
-      "id": "aga",
-      "source": "ag",
-      "target": "a"
+      "id": "srcrr",
+      "source": "src",
+      "target": "rr"
     },
     {
-      "id": "sysa",
+      "id": "rrout",
+      "source": "rr",
+      "target": "out"
+    },
+    {
+      "id": "insys",
+      "source": "in",
+      "target": "sys"
+    },
+    {
+      "id": "sysout",
       "source": "sys",
-      "target": "a"
+      "target": "out"
     }
   ]
 }

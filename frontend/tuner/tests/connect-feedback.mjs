@@ -8,7 +8,7 @@ page.on('pageerror', (e) => console.log('PAGEERROR', e))
 await stubBackend(page)
 await page.goto('http://localhost:5173/#/workflow', { waitUntil: 'networkidle' })
 await page.waitForTimeout(900)
-for (const l of ['Source', 'System message', 'Retrieval', 'Answer']) {
+for (const l of ['Source', 'System message', 'Reranker', 'Output']) {
   await page.locator(`[aria-label="${l}"]`).click(); await page.waitForTimeout(180)
 }
 await page.waitForTimeout(500)
@@ -51,12 +51,12 @@ check('node border turns error red', r.border === ERROR_RED, r.border)
 check('no edge was created', (await page.locator('.react-flow__edge').count()) === 0)
 
 console.log('\n--- hovering a valid target mid-connection ---')
-r = await hoverWhileConnecting('Source', 'Retrieval', 'handle')
+r = await hoverWhileConnecting('Source', 'Reranker', 'handle')
 check('no refusal tooltip on a valid target', r.tip === '', JSON.stringify(r.tip))
 check('valid drop created the edge', (await page.locator('.react-flow__edge').count()) === 1)
 
 console.log('\n--- duplicate wire ---')
-r = await hoverWhileConnecting('Source', 'Retrieval', 'handle')
+r = await hoverWhileConnecting('Source', 'Reranker', 'handle')
 check('duplicate is refused with a reason', r.body.includes('Already wired'), JSON.stringify(r.body))
 check('still just one edge', (await page.locator('.react-flow__edge').count()) === 1)
 

@@ -47,6 +47,23 @@ NO_PASSAGES = (
     "ask again."
 )
 
+# What a called flow is told to produce, by the extension its Output widget
+# declares. The shape of the text is the contract between that flow and the
+# Agent widget waiting on it, so it is stated rather than left to chance.
+PAYLOAD = {
+    "txt": "Reply with plain text only. No markdown, no headings, no code fences.",
+    "md": "Reply with Markdown.",
+    "json": (
+        "Reply with one JSON document and nothing else — no prose around it "
+        "and no code fence. It must parse."
+    ),
+    "csv": (
+        "Reply with CSV and nothing else: a header row, then one row per "
+        "record. No prose around it and no code fence."
+    ),
+    "html": "Reply with an HTML fragment and nothing else. No code fence.",
+}
+
 # Turns of history kept in front of the model. A chat runs unbounded but a
 # prompt cannot, and the retrieved passages are the bulk of what matters.
 HISTORY_TURNS = 10
@@ -69,6 +86,10 @@ class Citation:
     document_name: str
     pages: list[int]
     score: float
+    #: What `score` measures. Retrieval reports a cosine similarity in
+    #: [-1, 1]; a Reranker reports its own logit, on no fixed scale; a passage
+    #: handed over by a widget was never ranked at all.
+    score_kind: str
     text: str
 
 
@@ -95,11 +116,21 @@ class Chat:
         system: str | None = None,
         top_k: int | None = None,
         notes: Sequence[dict] = (),
+        passages: Sequence[dict] = (),
+        payload_type: str | None = None,
     ):
         self.model = model
         self.source_ids = list(source_ids)
         self.system = (system or "").strip() or DEFAULT_SYSTEM
         self.top_k = top_k or settings.chat_context_chunks
+        # Passages a flow already retrieved. When these are given nothing is
+        # searched here: the Source widgets did it, with the method and budget
+        # the user set on them, and a second search would ignore all of that.
+        self.passages = list(passages)
+        # What kind of text to produce. `None` is a conversation; a payload
+        # type is a called flow handing its work back to an Agent widget,
+        # where the shape of the text is the contract between them.
+        self.payload_type = payload_type
         # Passages supplied rather than retrieved: text typed into a Source
         # widget, and what an Agent widget's own flow answered. They are put in
         # front of the model exactly as given, and cited the same way, so an
@@ -118,10 +149,12 @@ class Chat:
     ) -> Answer:
         """Retrieve, prompt, and answer.
         """
-        rows: list[dict] = []
+        rows: list[dict] = list(self.passages)
         # Only worth loading the embedding stack when there is something to
-        # search: a flow made only of text and Agent widgets never touches it.
-        if self.model and self.source_ids:
+        # search that has not been searched already: a flow's Source widgets
+        # retrieve for themselves, and a flow made only of text and Agent
+        # widgets never touches it at all.
+        if not rows and self.model and self.source_ids:
             from app.rag.native import NativeRAG
 
             pipeline = await asyncio.to_thread(NativeRAG.shared, self.model)
@@ -142,8 +175,9 @@ class Chat:
                 source_id=None,
                 document_name=note["label"],
                 pages=[],
-                # Not a similarity: nothing ranked it, it was handed over.
+                # Nothing ranked it; it was handed over.
                 score=1.0,
+                score_kind="given",
                 text=note["text"],
             )
             for marker, note in enumerate(self.notes, start=1)
@@ -156,6 +190,7 @@ class Chat:
                 document_name=row["document_name"],
                 pages=list(row["pages"] or []),
                 score=row["score"],
+                score_kind=row.get("score_kind", "similarity"),
                 text=row["text"],
             )
             for marker, row in enumerate(rows, start=len(self.notes) + 1)
@@ -167,8 +202,12 @@ class Chat:
             for citation in citations
         )
 
+        instructions = f"{self.system}\n\n{GROUNDING}"
+        if self.payload_type:
+            instructions += f"\n\n{PAYLOAD[self.payload_type]}"
+
         messages = [
-            {"role": "system", "content": f"{self.system}\n\n{GROUNDING}"},
+            {"role": "system", "content": instructions},
             *(
                 {"role": role, "content": content}
                 for role, content in history[-HISTORY_TURNS:]

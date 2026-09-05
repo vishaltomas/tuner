@@ -17,7 +17,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import { Box, Typography } from '@mui/material'
 import type { FlowGraph, Source, WidgetConfig, WidgetKind } from '../../lib/types'
-import { formatCount, totalChunks, uid } from '../../lib/utils'
+import { totalChunks, uid } from '../../lib/utils'
 import { WidgetNode, type WidgetNodeData } from './WidgetNode'
 import { DRAG_TYPE, WIDGETS, connectionIssue, resolve } from './widgets'
 
@@ -78,6 +78,9 @@ export function WorkflowCanvas({
   const connectingFrom = useConnection((connection) =>
     connection.inProgress ? connection.fromNode.id : null,
   )
+  const connectingHandle = useConnection((connection) =>
+    connection.inProgress ? (connection.fromHandle?.id ?? null) : null,
+  )
 
   const { reachable } = useMemo(() => resolve(graph), [graph])
   const sourceNames = useMemo(
@@ -99,19 +102,26 @@ export function WorkflowCanvas({
           live: reachable.has(node.id),
           summary: summarise(node.kind, node.config, sourceNames),
           warning: warningFor(node.kind, node.config, sourceNames),
+          routes: node.kind === 'router' ? (node.config.routes ?? []) : undefined,
           // Computed for the whole canvas while a wire is in flight, so each
           // node can explain a refusal without knowing about the graph.
           connectIssue:
             connectingFrom && connectingFrom !== node.id
-              ? (connectionIssue(graph, connectingFrom, node.id) ?? undefined)
+              ? (connectionIssue(graph, connectingFrom, node.id, connectingHandle) ??
+                undefined)
               : undefined,
         },
       })),
-    [connectingFrom, graph, measured, reachable, selectedId, sourceNames],
+    [connectingFrom, connectingHandle, graph, measured, reachable, selectedId, sourceNames],
   )
 
   const edges: Edge[] = useMemo(
-    () => graph.edges.map((edge) => ({ ...edge, animated: reachable.has(edge.target) })),
+    () =>
+      graph.edges.map((edge) => ({
+        ...edge,
+        sourceHandle: edge.sourceHandle ?? undefined,
+        animated: reachable.has(edge.target),
+      })),
     [graph.edges, reachable],
   )
 
@@ -179,6 +189,9 @@ export function WorkflowCanvas({
           id: edge.id,
           source: edge.source,
           target: edge.target,
+          // Which of a Router's outputs the wire left from. Dropping this
+          // would make every route look like the same branch.
+          sourceHandle: edge.sourceHandle ?? null,
         })),
       })
     },
@@ -292,7 +305,12 @@ export function WorkflowCanvas({
         isValidConnection={(connection) =>
           Boolean(connection.source) &&
           Boolean(connection.target) &&
-          connectionIssue(graph, connection.source, connection.target) === null
+          connectionIssue(
+            graph,
+            connection.source,
+            connection.target,
+            connection.sourceHandle,
+          ) === null
         }
         onNodeClick={(_, node) => onSelect(node.id)}
         onPaneClick={() => onSelect(null)}
@@ -324,21 +342,37 @@ function summarise(
   config: WidgetConfig,
   sources: Map<string, Source>,
 ): string {
+  if (kind === 'input' || kind === 'output') {
+    const mode = config.mode ?? 'chat'
+    if (mode === 'chat') return kind === 'input' ? 'The chat question' : 'The chat answer'
+    return `Payload · .${config.payloadType ?? 'txt'}`
+  }
+
   if (kind === 'source') {
     const type = config.sourceType ?? 'files'
     if (type === 'chat') return 'The conversation so far'
     if (type === 'txt') {
       const text = config.text?.trim()
-      return text ? `“${text.slice(0, 60)}${text.length > 60 ? '…' : ''}”` : 'No text yet'
+      return text ? `“${text.slice(0, 55)}${text.length > 55 ? '…' : ''}”` : 'No text yet'
     }
-    const source = config.sourceId ? sources.get(config.sourceId) : undefined
-    if (!source) return 'No source picked'
-    return `${source.name} · ${formatCount(totalChunks(source.documents))} vectors`
+    const picked = config.sourceIds ?? []
+    if (picked.length === 0) return 'No sources picked'
+    const names = picked.map((id) => sources.get(id)?.name).filter(Boolean)
+    const method = config.method === 'mmr' ? 'MMR' : 'similarity'
+    return `${names.join(', ') || `${picked.length} sources`} · ${config.docs ?? 6} docs, ${method}`
+  }
+
+  if (kind === 'embed') return config.model || "Its sources' own model"
+  if (kind === 'reranker') {
+    if (!config.model) return 'No model picked'
+    return config.keep ? `${config.model} · keep ${config.keep}` : config.model
+  }
+  if (kind === 'router') {
+    const routes = config.routes ?? []
+    return `${routes.length} routes · ${config.model || 'app chat model'}`
   }
   if (kind === 'agent') return config.flow ? `Runs ${config.flow}` : 'No flow picked'
-  if (kind === 'system') return config.system?.trim() || 'Backend default'
-  if (kind === 'retrieval') return `${config.topK ?? 6} passages per question`
-  return 'Answers appear in Chat'
+  return config.system?.trim() || 'Backend default'
 }
 
 /** Why a widget cannot be used yet, if it cannot. */
@@ -348,14 +382,27 @@ function warningFor(
   sources: Map<string, Source>,
 ): string | undefined {
   if (kind === 'agent') return config.flow ? undefined : 'No flow picked'
+  // An Embed widget with no model borrows its sources'; a Reranker has
+  // nothing to borrow, so it needs one named.
+  if (kind === 'reranker') return config.model ? undefined : 'No model picked'
+  if (kind === 'router') {
+    const routes = config.routes ?? []
+    if (routes.length < 2) return 'Needs at least two routes'
+    if (routes.some((route) => !route.when.trim())) return 'A route says no condition'
+    return undefined
+  }
   if (kind !== 'source') return undefined
 
   const type = config.sourceType ?? 'files'
   if (type === 'chat') return undefined
   if (type === 'txt') return config.text?.trim() ? undefined : 'No text yet'
-  if (!config.sourceId) return 'No source picked'
-  const source = sources.get(config.sourceId)
-  if (!source) return 'That source no longer exists'
-  if (totalChunks(source.documents) === 0) return 'That source has no vectors yet'
+
+  const picked = config.sourceIds ?? []
+  if (picked.length === 0) return 'No sources picked'
+  const missing = picked.filter((id) => !sources.has(id))
+  if (missing.length > 0) return 'A source no longer exists'
+  if (picked.some((id) => totalChunks(sources.get(id)!.documents) === 0)) {
+    return 'A source has no vectors yet'
+  }
   return undefined
 }

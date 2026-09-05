@@ -1,5 +1,8 @@
-"""
-RAG module
+"""The local half of the pipeline: chunking, embedding, retrieval, reranking.
+
+Everything here runs models on this machine against the vectors in Postgres.
+What a flow does with the passages — the prompt, the answer — is `chat`; what
+decides which of these run and in what order is `workflow`.
 """
 
 import asyncio
@@ -14,7 +17,12 @@ from uuid import UUID, uuid4
 
 from torch import no_grad
 from torch.nn.functional import normalize
-from transformers import AutoModel, AutoTokenizer, PreTrainedTokenizerBase
+from transformers import (
+    AutoModel,
+    AutoModelForSequenceClassification,
+    AutoTokenizer,
+    PreTrainedTokenizerBase,
+)
 from unstructured.documents.elements import Element, Footer, Header, Title
 from unstructured.nlp.tokenize import sent_tokenize
 from unstructured.partition.pdf import partition_pdf
@@ -42,6 +50,18 @@ PDF_STRATEGY = "fast"
 
 # Passages per forward pass; a batch pads to its longest member.
 EMBED_BATCH = 32
+
+# How strongly MMR penalises a passage for resembling one already picked, and
+# how many top-scoring passages it chooses from. The pool is a multiple of the
+# budget because the selection is quadratic in its size.
+MMR_DIVERSITY = 0.4
+MMR_POOL = 5
+
+# Question-and-passage pairs a reranker scores per forward pass, and the pair
+# length it was trained on — it truncates rather than stretches, so a long
+# passage is scored on its opening.
+RERANK_BATCH = 16
+RERANK_MAX_TOKENS = 512
 
 
 @dataclass(frozen=True, slots=True)
@@ -394,16 +414,23 @@ class NativeRAG:
         query_text: str,
         num_context_chunks: int = 10,
         source_ids: Sequence[UUID] | None = None,
+        *,
+        vector: Sequence[float] | None = None,
+        method: str = "similarity",
+        diversity: float = MMR_DIVERSITY,
     ) -> list[dict]:
         """The passages closest to a question, nearest first.
 
         The question is embedded with the same model the passages were, since
         two models put the same sentence in different spaces and a similarity
-        across them means nothing. `source_ids` narrows the search to chosen
-        sources — what a chat scoped to one knowledge base wants; without it
-        every source using this model is searched. The caller is the one that
-        has to have checked those sources share this model: nothing here can
-        tell a vector from the wrong space by looking at it.
+        across them means nothing. `vector` lets a caller supply that
+        embedding — an Embed widget owns it in a flow — so the question is not
+        encoded twice when something upstream has already done it.
+
+        `source_ids` narrows the search to chosen sources; without it every
+        source using this model is searched. The caller is the one that has to
+        have checked those sources share this model: nothing here can tell a
+        vector from the wrong space by looking at it.
 
         The comparison happens here rather than in Postgres: without pgvector
         there is no cosine operator to order by and no index to serve it, so
@@ -418,14 +445,14 @@ class NativeRAG:
         )
 
         async with session_factory() as session:
-            rows = (
-                (await session.execute(sql(statement), params)).mappings().all()
-            )
+            rows = (await session.execute(sql(statement), params)).mappings().all()
 
         if not rows:
             return []
 
-        vector = (await asyncio.to_thread(self.embed, [query_text]))[0]
+        if vector is None:
+            vector = (await asyncio.to_thread(self.embed, [query_text]))[0]
+
         # Both sides are already unit length, so the dot product is the cosine.
         scored = [
             (sum(a * b for a, b in zip(vector, row["embedding"], strict=True)), row)
@@ -433,9 +460,54 @@ class NativeRAG:
         ]
         scored.sort(key=lambda pair: pair[0], reverse=True)
 
-        return [
-            {**dict(row), "score": score} for score, row in scored[:num_context_chunks]
-        ]
+        if method == "mmr":
+            picked = self._mmr(scored, num_context_chunks, diversity)
+        else:
+            picked = scored[:num_context_chunks]
+
+        return [{**dict(row), "score": score} for score, row in picked]
+
+    @staticmethod
+    def _mmr(
+        scored: list[tuple[float, dict]], count: int, diversity: float
+    ) -> list[tuple[float, dict]]:
+        """Maximal marginal relevance: relevant passages that differ.
+
+        Plain top-k answers a question with whichever passages sit closest to
+        it, which on a corpus that repeats itself means several near-copies of
+        one paragraph and nothing else. MMR picks each next passage for how
+        relevant it is *minus* how much it resembles what has already been
+        picked, so the budget is spent on distinct material.
+
+        `diversity` is the weight on that penalty: 0 is plain relevance, 1
+        ignores relevance entirely.
+        """
+        # A shortlist, because the pairwise comparison below is quadratic and
+        # nothing past the first several dozen was going to be picked anyway.
+        pool = scored[: max(count * MMR_POOL, count)]
+        picked: list[tuple[float, dict]] = []
+
+        while pool and len(picked) < count:
+            best_index, best_value = 0, None
+            for index, (relevance, row) in enumerate(pool):
+                overlap = max(
+                    (
+                        sum(
+                            a * b
+                            for a, b in zip(
+                                row["embedding"], chosen["embedding"], strict=True
+                            )
+                        )
+                        for _, chosen in picked
+                    ),
+                    default=0.0,
+                )
+                value = (1 - diversity) * relevance - diversity * overlap
+                if best_value is None or value > best_value:
+                    best_index, best_value = index, value
+            picked.append(pool.pop(best_index))
+
+        return picked
 
     async def _pgsql_connector(
         self,
@@ -493,3 +565,84 @@ class NativeRAG:
                 },
             )
             await session.commit()
+
+
+class Reranker:
+    """Reordering retrieved passages with a cross-encoder.
+
+    Retrieval scores a passage without ever seeing the question beside it: the
+    two are embedded separately and compared as vectors, which is fast enough
+    to run over a whole corpus but blunt. A cross-encoder reads the question
+    and the passage *together* and scores the pair, which is far better at
+    telling a passage that answers the question from one that merely shares
+    its vocabulary — and far too slow to run over anything but a shortlist.
+
+    So the two go together: `NativeRAG.query` narrows a corpus to tens of
+    passages, and this reorders those.
+    """
+
+    @staticmethod
+    @cache
+    def shared(model: str) -> "Reranker":
+        """The reranker for one model id, built once.
+
+        Held the same way `NativeRAG.shared` holds an embedding model, and for
+        the same reason: the weights are hundreds of megabytes and a question
+        should not pay for loading them.
+
+        Blocking on first call per model; callers hand it to a thread.
+        """
+        return Reranker(model)
+
+    def __init__(self, model: str):
+        self.model = model
+        self._tokenizer = None
+        self._encoder = None
+        # `score` runs in whatever thread its caller handed it to, and two
+        # questions can arrive at once. Without this they race to build the
+        # model and each pays for a copy of the weights.
+        self._load_lock = threading.Lock()
+
+    def score(self, question: str, passages: Sequence[str]) -> list[float]:
+        """Relevance of each passage to the question, higher is better.
+
+        The raw logit is returned rather than a probability: nothing here needs
+        a calibrated number, only an ordering, and squashing it through a
+        sigmoid would lose the spread that makes near-ties visible.
+
+        Blocking and CPU-bound; callers hand it to a thread.
+        """
+        if not passages:
+            return []
+
+        if self._encoder is None:
+            with self._load_lock:
+                # Checked again inside: whoever waited on the lock is looking
+                # at a model the holder has already built.
+                if self._encoder is None:
+                    local = storage.model_path(self.model)
+                    source = str(local) if local.is_dir() else self.model
+                    self._tokenizer = AutoTokenizer.from_pretrained(source)
+                    encoder = AutoModelForSequenceClassification.from_pretrained(source)
+                    encoder.eval()
+                    self._encoder = encoder
+
+        scores: list[float] = []
+        for start in range(0, len(passages), RERANK_BATCH):
+            batch = list(passages[start : start + RERANK_BATCH])
+            encoded = self._tokenizer(
+                [question] * len(batch),
+                batch,
+                padding=True,
+                truncation=True,
+                max_length=RERANK_MAX_TOKENS,
+                return_tensors="pt",
+            )
+            with no_grad():
+                logits = self._encoder(**encoded).logits
+            # A cross-encoder trained for ranking has one output; one trained
+            # as a classifier has two, where the second is "relevant".
+            column = logits[:, -1] if logits.shape[-1] > 1 else logits.squeeze(-1)
+            scores.extend(column.tolist())
+
+        return scores

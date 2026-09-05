@@ -562,7 +562,7 @@ async def chat(
         name = named(body.flow or MAIN, flow=True, workflow=named(body.workflow))
         try:
             workflow = await Workflow.load(body.workflow, name)
-            text, citations = await workflow.answer(body.message, history)
+            text, citations = await workflow.run(body.message, history)
         except WorkflowError as exc:
             # The flow is the user's own and the reason names its widgets, so
             # it is worth saying rather than collapsing into a 500. A missing

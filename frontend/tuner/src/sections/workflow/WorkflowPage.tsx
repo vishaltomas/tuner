@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ReactFlowProvider } from '@xyflow/react'
+import { useMediaQuery, useTheme } from '@mui/material'
 import {
   Alert,
   Box,
@@ -22,8 +23,9 @@ import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined'
 import { EMPTY_GRAPH, MAIN, useFlows, useWorkflows } from '../../hooks/useFlows'
 import * as api from '../../lib/api'
 import { navigate } from '../../lib/route'
-import type { FlowGraph, Source, WidgetConfig, WidgetKind } from '../../lib/types'
+import type { FlowGraph, LocalModel, Source, WidgetConfig, WidgetKind } from '../../lib/types'
 import { uid } from '../../lib/utils'
+import { ConfirmDialog, NameDialog } from './NameDialog'
 import { FlowTree } from './FlowTree'
 import { WidgetInspector } from './WidgetInspector'
 import { WidgetRail } from './WidgetRail'
@@ -77,9 +79,35 @@ export function WorkflowPage({ sources }: { sources: Source[] }) {
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<Notice>(null)
   const [fitSignal, setFitSignal] = useState(0)
+  // Which dialog is open, if any. These were `window.prompt` and
+  // `window.confirm`, which a browser stops showing once a page has used a
+  // few of them — and then returns null, so creating a flow silently did
+  // nothing. See `NameDialog`.
+  const [asking, setAsking] = useState<'workflow' | 'renameWorkflow' | 'flow' | null>(
+    null,
+  )
+  const [confirming, setConfirming] = useState(false)
+  // Models on disk, offered to the Embed and Reranker widgets. Fetched once:
+  // downloading one is a deliberate act elsewhere in the app, not something
+  // that happens while a flow is being wired.
+  const [models, setModels] = useState<LocalModel[]>([])
+  useEffect(() => {
+    void (async () => setModels((await api.fetchLocalModels()) ?? []))()
+  }, [])
 
   const selected = graph.nodes.find((node) => node.id === selectedId) ?? null
-  const { problems, calls } = useMemo(() => resolve(graph), [graph])
+  // Which side the inspector sits on. Chosen here rather than with `lg:` on
+  // two copies: rendering the same form twice puts duplicate input ids and
+  // duplicate labels in the DOM, which a screen reader reads as two of
+  // everything.
+  const theme = useTheme()
+  const besideCanvas = useMediaQuery(theme.breakpoints.up('lg'))
+
+  const isMain = open === MAIN
+  const { problems, calls } = useMemo(
+    () => resolve(graph, { isMain }),
+    [graph, isMain],
+  )
 
   const counts = useMemo(() => {
     const tally = Object.fromEntries(WIDGET_ORDER.map((kind) => [kind, 0])) as Record<
@@ -128,6 +156,30 @@ export function WorkflowPage({ sources }: { sources: Source[] }) {
     setDirty(true)
   }
 
+  /**
+   * Why a name cannot be used, mirroring the patterns in `services/flows.py`.
+   * Checked here so a refusal appears under the field rather than arriving as
+   * a failed request.
+   */
+  function checkWorkflowName(name: string): string | null {
+    if (!/^[A-Za-z0-9][A-Za-z0-9 _-]{0,63}$/.test(name)) {
+      return 'Letters, numbers, spaces, dashes and underscores; start with a letter or number.'
+    }
+    if (workflows.workflows.some((one) => one.name === name)) {
+      return 'A workflow with that name already exists.'
+    }
+    return null
+  }
+
+  function checkFlowName(raw: string): string | null {
+    const name = raw.endsWith('.flow') ? raw : `${raw}.flow`
+    if (!/^[A-Za-z0-9][A-Za-z0-9 _-]{0,63}\.flow$/.test(name)) {
+      return 'Letters, numbers, spaces, dashes and underscores, ending in .flow.'
+    }
+    if (files.some((one) => one.name === name)) return `${name} already exists.`
+    return null
+  }
+
   /** Place a widget without a pointer, in the first slot nothing occupies. */
   function place(kind: WidgetKind, config: WidgetConfig) {
     const nodeId = uid('node')
@@ -172,9 +224,8 @@ export function WorkflowPage({ sources }: { sources: Source[] }) {
     setSelectedId(null)
   }
 
-  async function createWorkflow() {
-    const name = window.prompt('Name the new workflow', 'My workflow 2')?.trim()
-    if (!name) return
+  async function createWorkflow(name: string) {
+    setAsking(null)
     setBusy(true)
     try {
       const made = await workflows.create(name)
@@ -187,10 +238,9 @@ export function WorkflowPage({ sources }: { sources: Source[] }) {
     }
   }
 
-  async function renameWorkflow() {
-    if (!workflow) return
-    const next = window.prompt('Rename workflow', workflow)?.trim()
-    if (!next || next === workflow) return
+  async function renameWorkflow(next: string) {
+    setAsking(null)
+    if (!workflow || next === workflow) return
     setBusy(true)
     try {
       const renamed = await workflows.rename(workflow, next)
@@ -204,8 +254,8 @@ export function WorkflowPage({ sources }: { sources: Source[] }) {
   }
 
   async function deleteWorkflow() {
+    setConfirming(false)
     if (!workflow) return
-    if (!window.confirm(`Delete “${workflow}” and every flow in it?`)) return
     setBusy(true)
     try {
       await workflows.remove(workflow)
@@ -221,10 +271,9 @@ export function WorkflowPage({ sources }: { sources: Source[] }) {
     }
   }
 
-  async function createFlow() {
-    const raw = window.prompt('Name the new flow', 'agent.flow')
-    if (!raw) return
-    const name = raw.trim().endsWith('.flow') ? raw.trim() : `${raw.trim()}.flow`
+  async function createFlow(raw: string) {
+    setAsking(null)
+    const name = raw.endsWith('.flow') ? raw : `${raw}.flow`
     setBusy(true)
     try {
       await save(name, EMPTY_GRAPH)
@@ -282,6 +331,20 @@ export function WorkflowPage({ sources }: { sources: Source[] }) {
     else await refresh()
   }
 
+  // Built once and placed on whichever side fits; see `besideCanvas`.
+  const inspector = selected ? (
+    <WidgetInspector
+      node={selected}
+      sources={sources}
+      models={models}
+      flows={files}
+      openFlow={open}
+      isMain={isMain}
+      onChange={updateSelected}
+      onDelete={deleteSelected}
+    />
+  ) : null
+
   return (
     <Box className="flex h-full flex-col" sx={{ bgcolor: 'background.default' }}>
       <Box
@@ -309,7 +372,7 @@ export function WorkflowPage({ sources }: { sources: Source[] }) {
           ))}
         </TextField>
         <Tooltip title="New workflow">
-          <IconButton size="small" aria-label="New workflow" onClick={() => void createWorkflow()}>
+          <IconButton size="small" aria-label="New workflow" onClick={() => setAsking('workflow')}>
             <AddIcon fontSize="small" />
           </IconButton>
         </Tooltip>
@@ -317,7 +380,7 @@ export function WorkflowPage({ sources }: { sources: Source[] }) {
           <IconButton
             size="small"
             aria-label="Rename workflow"
-            onClick={() => void renameWorkflow()}
+            onClick={() => setAsking('renameWorkflow')}
           >
             <DriveFileRenameOutlineIcon fontSize="small" />
           </IconButton>
@@ -326,7 +389,7 @@ export function WorkflowPage({ sources }: { sources: Source[] }) {
           <IconButton
             size="small"
             aria-label="Delete workflow"
-            onClick={() => void deleteWorkflow()}
+            onClick={() => setConfirming(true)}
           >
             <DeleteOutlinedIcon fontSize="small" />
           </IconButton>
@@ -360,7 +423,7 @@ export function WorkflowPage({ sources }: { sources: Source[] }) {
             <Box sx={{ width: 7, height: 7, borderRadius: '50%', bgcolor: 'warning.main' }} />
           </Tooltip>
         )}
-        {open === MAIN && (
+        {isMain && (
           <Tooltip title="Chat runs this flow">
             <Chip label="entry point" color="success" variant="outlined" />
           </Tooltip>
@@ -369,7 +432,7 @@ export function WorkflowPage({ sources }: { sources: Source[] }) {
         <Button
           size="small"
           startIcon={<AddIcon fontSize="small" />}
-          onClick={() => void createFlow()}
+          onClick={() => setAsking('flow')}
           disabled={busy}
         >
           New flow
@@ -425,7 +488,7 @@ export function WorkflowPage({ sources }: { sources: Source[] }) {
               called={calls}
               dirty={dirty}
               onOpen={(name) => void load(name)}
-              onCreate={() => void createFlow()}
+              onCreate={() => setAsking('flow')}
               onDelete={(name) => void handleDelete(name)}
             />
           </Box>
@@ -454,9 +517,9 @@ export function WorkflowPage({ sources }: { sources: Source[] }) {
           </Box>
         </Box>
 
-        {selected && (
+        {selected && besideCanvas && (
           <Box
-            className="hidden shrink-0 flex-col overflow-y-auto lg:flex"
+            className="flex shrink-0 flex-col overflow-y-auto"
             sx={{
               width: INSPECTOR_WIDTH,
               borderLeft: 1,
@@ -464,14 +527,7 @@ export function WorkflowPage({ sources }: { sources: Source[] }) {
               bgcolor: 'background.paper',
             }}
           >
-            <WidgetInspector
-              node={selected}
-              sources={sources}
-              flows={files}
-              openFlow={open}
-              onChange={updateSelected}
-              onDelete={deleteSelected}
-            />
+            {inspector}
           </Box>
         )}
 
@@ -498,9 +554,9 @@ export function WorkflowPage({ sources }: { sources: Source[] }) {
       </Box>
 
       {/* Only below `lg`, where there is no room for it beside the canvas. */}
-      {selected && (
+      {selected && !besideCanvas && (
         <Box
-          className="shrink-0 overflow-y-auto lg:hidden"
+          className="shrink-0 overflow-y-auto"
           sx={{
             maxHeight: BOTTOM_INSPECTOR_MAX,
             borderTop: 1,
@@ -508,16 +564,48 @@ export function WorkflowPage({ sources }: { sources: Source[] }) {
             bgcolor: 'background.paper',
           }}
         >
-          <WidgetInspector
-            node={selected}
-            sources={sources}
-            flows={files}
-            openFlow={open}
-            onChange={updateSelected}
-            onDelete={deleteSelected}
-          />
+          {inspector}
         </Box>
       )}
+
+      <NameDialog
+        open={asking === 'workflow'}
+        title="New workflow"
+        label="Workflow name"
+        initial=""
+        submitLabel="Create"
+        validate={checkWorkflowName}
+        onSubmit={(name) => void createWorkflow(name)}
+        onClose={() => setAsking(null)}
+      />
+      <NameDialog
+        open={asking === 'renameWorkflow'}
+        title="Rename workflow"
+        label="Workflow name"
+        initial={workflow ?? ''}
+        submitLabel="Rename"
+        validate={(name) => (name === workflow ? null : checkWorkflowName(name))}
+        onSubmit={(name) => void renameWorkflow(name)}
+        onClose={() => setAsking(null)}
+      />
+      <NameDialog
+        open={asking === 'flow'}
+        title="New flow"
+        label="Flow name"
+        initial=""
+        submitLabel="Create"
+        validate={checkFlowName}
+        onSubmit={(name) => void createFlow(name)}
+        onClose={() => setAsking(null)}
+      />
+      <ConfirmDialog
+        open={confirming}
+        title={`Delete ${workflow ?? ''}?`}
+        body="Every flow in it goes too. This cannot be undone."
+        confirmLabel="Delete"
+        onConfirm={() => void deleteWorkflow()}
+        onClose={() => setConfirming(false)}
+      />
 
       <Snackbar
         open={Boolean(notice)}

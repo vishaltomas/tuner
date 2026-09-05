@@ -19,7 +19,7 @@ const nodes = () => page.locator('.react-flow__node').count()
 const edges = () => page.locator('.react-flow__edge').count()
 
 console.log('\n--- widget drag from right rail ---')
-for (const label of ['Answer', 'Retrieval', 'System message']) {
+for (const label of ['Output', 'Reranker', 'System message']) {
   const b = await nodes()
   await page.locator(`[aria-label="${label}"]`).dragTo(canvas)
   await page.waitForTimeout(350)
@@ -48,9 +48,9 @@ check('handle drag creates an edge', (await edges()) > e0, `${e0} -> ${await edg
 
 console.log('\n--- limits & click-add ---')
 const b3 = await nodes()
-await page.locator('[aria-label="Answer"]').dragTo(canvas)
+await page.locator('[aria-label="Output"]').dragTo(canvas)
 await page.waitForTimeout(300)
-check('second Answer refused', (await nodes()) === b3, `${b3} -> ${await nodes()}`)
+check('second Output refused', (await nodes()) === b3, `${b3} -> ${await nodes()}`)
 await page.locator('[aria-label="Source"]').click()
 await page.waitForTimeout(300)
 check('click adds a node', (await nodes()) === b3 + 1, `${b3} -> ${await nodes()}`)
@@ -59,7 +59,7 @@ console.log('\n--- moving a node ---')
 // On a fresh page, so no later node can be sitting over the one being grabbed.
 await page.reload({ waitUntil: 'networkidle' })
 await page.waitForTimeout(700)
-await page.locator('[aria-label="Answer"]').dragTo(canvas, { targetPosition: { x: 500, y: 400 } })
+await page.locator('[aria-label="Output"]').dragTo(canvas, { targetPosition: { x: 500, y: 400 } })
 await page.waitForTimeout(500)
 const solo = page.locator('.react-flow__node').first()
 const box = await solo.boundingBox()

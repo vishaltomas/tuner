@@ -185,7 +185,7 @@ function Citations({ citations }: { citations: ChatCitation[] }) {
               <Box component="span" sx={{ fontWeight: 700 }}>
                 [{citation.marker}]
               </Box>{' '}
-              {label(citation)} · similarity {citation.score.toFixed(3)}
+              {label(citation)} · {SCORE[citation.scoreKind ?? 'similarity'](citation.score)}
             </Typography>
             <Typography variant="caption" component="p" className="mt-0.5">
               {citation.text}
@@ -195,6 +195,19 @@ function Citations({ citations }: { citations: ChatCitation[] }) {
       </AccordionDetails>
     </Accordion>
   )
+}
+
+/**
+ * How a passage's score is described.
+ *
+ * The three are different measurements, and after a Reranker has run they do
+ * not descend together — saying "similarity" over a cross-encoder's ordering
+ * makes correct numbers look wrong.
+ */
+const SCORE: Record<string, (score: number) => string> = {
+  similarity: (score) => `similarity ${score.toFixed(3)}`,
+  rerank: (score) => `rerank ${score.toFixed(2)}`,
+  given: () => 'supplied',
 }
 
 /** `report.pdf (pp. 3–4)` — the pages are absent for a text file. */

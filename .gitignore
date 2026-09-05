@@ -31,3 +31,6 @@ backend/models/
 # place, so a crash mid-save can leave one of these; the .flow files themselves
 # are meant to be committed.
 *.flow.tmp
+
+# Screenshots the browser suites take as they run
+frontend/tuner/tests/*.png
